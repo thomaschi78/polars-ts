@@ -12,6 +12,7 @@ use msm_multi::compute_pairwise_msm_multi;
 use erp::compute_pairwise_erp;
 use lcss::compute_pairwise_lcss;
 use twe::compute_pairwise_twe;
+use sbd::compute_pairwise_sbd;
 
 mod dtw;
 mod dtw_multi;
@@ -22,6 +23,7 @@ mod wdtw;
 mod erp;
 mod lcss;
 mod twe;
+mod sbd;
 mod mann_kendall;
 
 #[global_allocator]
@@ -59,5 +61,6 @@ fn polars_ts_rs(_py: Python, m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(compute_pairwise_erp, m)?)?;
     m.add_function(wrap_pyfunction!(compute_pairwise_lcss, m)?)?;
     m.add_function(wrap_pyfunction!(compute_pairwise_twe, m)?)?;
+    m.add_function(wrap_pyfunction!(compute_pairwise_sbd, m)?)?;
     Ok(())
 }

@@ -5,6 +5,7 @@ from polars_ts_rs.polars_ts_rs import (
     compute_pairwise_erp,
     compute_pairwise_lcss,
     compute_pairwise_twe,
+    compute_pairwise_sbd,
 )
 
 
@@ -286,6 +287,94 @@ class TestTWE:
 
 
 # ===========================================================================
+# SBD tests
+# ===========================================================================
+
+class TestSBD:
+    def test_identical_series_zero_distance(self, identical_series):
+        result = compute_pairwise_sbd(identical_series, identical_series)
+        d = _to_dict(result)
+        assert abs(d[("A", "B")]) < 1e-10
+
+    def test_basic_distance(self, two_series):
+        result = compute_pairwise_sbd(two_series, two_series)
+        d = _to_dict(result)
+        assert d[("A", "B")] > 0  # not identical → positive distance
+
+    def test_opposite_series_high_distance(self):
+        """Negated series should have high SBD (close to 2)."""
+        df = pl.DataFrame({
+            "unique_id": ["A"] * 4 + ["B"] * 4,
+            "y": [1.0, 2.0, 3.0, 4.0, -1.0, -2.0, -3.0, -4.0],
+        })
+        result = compute_pairwise_sbd(df, df)
+        d = _to_dict(result)
+        assert d[("A", "B")] > 1.0  # opposite shape → distance > 1
+
+    def test_shift_invariant(self):
+        """SBD should be invariant to time shifts."""
+        df = pl.DataFrame({
+            "unique_id": ["A"] * 6 + ["B"] * 6,
+            "y": [0.0, 0.0, 1.0, 2.0, 3.0, 0.0,
+                  0.0, 0.0, 0.0, 1.0, 2.0, 3.0],
+        })
+        result = compute_pairwise_sbd(df, df)
+        d = _to_dict(result)
+        assert abs(d[("A", "B")]) < 1e-10
+
+    def test_scale_invariant(self):
+        """SBD should be invariant to uniform scaling."""
+        df = pl.DataFrame({
+            "unique_id": ["A"] * 4 + ["B"] * 4,
+            "y": [1.0, 2.0, 3.0, 4.0, 10.0, 20.0, 30.0, 40.0],
+        })
+        result = compute_pairwise_sbd(df, df)
+        d = _to_dict(result)
+        assert abs(d[("A", "B")]) < 1e-10
+
+    def test_range_zero_to_two(self, three_series):
+        """SBD distance should be in [0, 2]."""
+        result = compute_pairwise_sbd(three_series, three_series)
+        for v in result["sbd"].to_list():
+            assert 0.0 <= v <= 2.0
+
+    def test_reversed_series_larger(self, three_series):
+        result = compute_pairwise_sbd(three_series, three_series)
+        d = _to_dict(result)
+        # C is A reversed — should be further than B which differs by 1 point
+        assert d[("A", "C")] > d[("A", "B")]
+
+    def test_output_columns(self, two_series):
+        result = compute_pairwise_sbd(two_series, two_series)
+        assert set(result.columns) == {"id_1", "id_2", "sbd"}
+
+    def test_no_self_comparisons(self, three_series):
+        result = compute_pairwise_sbd(three_series, three_series)
+        for row in result.to_dicts():
+            assert row["id_1"] != row["id_2"]
+
+    def test_no_duplicate_pairs(self, three_series):
+        result = compute_pairwise_sbd(three_series, three_series)
+        assert result.height == 3
+
+    def test_single_series_empty_result(self, single_series):
+        result = compute_pairwise_sbd(single_series, single_series)
+        assert result.height == 0
+
+    def test_preserves_int_dtype(self, int_id_series):
+        result = compute_pairwise_sbd(int_id_series, int_id_series)
+        assert result["id_1"].dtype == result["id_2"].dtype
+        assert result["id_1"].dtype != pl.String
+
+    def test_symmetric(self, three_series):
+        df_a = three_series.filter(pl.col("unique_id") == "A")
+        df_c = three_series.filter(pl.col("unique_id") == "C")
+        ac = compute_pairwise_sbd(df_a, df_c)
+        ca = compute_pairwise_sbd(df_c, df_a)
+        assert abs(ac["sbd"][0] - ca["sbd"][0]) < 1e-10
+
+
+# ===========================================================================
 # Cross-metric consistency tests
 # ===========================================================================
 
@@ -296,11 +385,13 @@ class TestCrossMetric:
         erp = _to_dict(compute_pairwise_erp(identical_series, identical_series))
         lcss = _to_dict(compute_pairwise_lcss(identical_series, identical_series, epsilon=0.01))
         twe = _to_dict(compute_pairwise_twe(identical_series, identical_series))
+        sbd = _to_dict(compute_pairwise_sbd(identical_series, identical_series))
 
         assert dtw[("A", "B")] == 0.0
         assert erp[("A", "B")] == 0.0
         assert lcss[("A", "B")] == 0.0
         assert abs(twe[("A", "B")]) < 1e-10
+        assert abs(sbd[("A", "B")]) < 1e-10
 
     def test_ordering_consistent(self, three_series):
         """All metrics should agree that A-B is closer than A-C."""
@@ -309,10 +400,13 @@ class TestCrossMetric:
         lcss = _to_dict(compute_pairwise_lcss(three_series, three_series, epsilon=0.5))
         twe = _to_dict(compute_pairwise_twe(three_series, three_series))
 
+        sbd = _to_dict(compute_pairwise_sbd(three_series, three_series))
+
         assert dtw[("A", "B")] < dtw[("A", "C")]
         assert erp[("A", "B")] < erp[("A", "C")]
         assert lcss[("A", "B")] < lcss[("A", "C")]
         assert twe[("A", "B")] < twe[("A", "C")]
+        assert sbd[("A", "B")] < sbd[("A", "C")]
 
     def test_all_same_pair_count(self, three_series):
         """All metrics should produce the same number of pairs."""
@@ -320,7 +414,8 @@ class TestCrossMetric:
         n_erp = compute_pairwise_erp(three_series, three_series).height
         n_lcss = compute_pairwise_lcss(three_series, three_series).height
         n_twe = compute_pairwise_twe(three_series, three_series).height
-        assert n_dtw == n_erp == n_lcss == n_twe == 3
+        n_sbd = compute_pairwise_sbd(three_series, three_series).height
+        assert n_dtw == n_erp == n_lcss == n_twe == n_sbd == 3
 
     def test_cross_dataframe(self):
         """Test comparing series across two different DataFrames."""
@@ -335,9 +430,12 @@ class TestCrossMetric:
         erp = compute_pairwise_erp(df1, df2)
         lcss = compute_pairwise_lcss(df1, df2)
         twe = compute_pairwise_twe(df1, df2)
+        sbd = compute_pairwise_sbd(df1, df2)
 
         assert erp.height == 1
         assert lcss.height == 1
         assert twe.height == 1
+        assert sbd.height == 1
         assert erp["erp"][0] > 0
         assert twe["twe"][0] > 0
+        assert sbd["sbd"][0] > 0

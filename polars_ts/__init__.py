@@ -11,6 +11,7 @@ from polars_ts_rs.polars_ts_rs import (
     compute_pairwise_erp,
     compute_pairwise_lcss,
     compute_pairwise_twe,
+    compute_pairwise_sbd,
 )
 
 __all__ = [
@@ -23,6 +24,7 @@ __all__ = [
     "compute_pairwise_erp",
     "compute_pairwise_lcss",
     "compute_pairwise_twe",
+    "compute_pairwise_sbd",
 ]
 
 import polars as pl
