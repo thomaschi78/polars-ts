@@ -1,4 +1,4 @@
-from typing import Literal, Tuple
+from typing import Literal, Optional, Tuple
 
 import polars as pl
 
@@ -6,6 +6,8 @@ try:
     import polars_ds as pds
 except ImportError:
     pds = None
+
+from polars_ts.decomposition._anomaly import flag_anomalies
 
 
 def fourier_decomposition(
@@ -16,6 +18,7 @@ def fourier_decomposition(
     id_col: str = "unique_id",
     time_col: str = "ds",
     target_col: str = "y",
+    anomaly_threshold: Optional[float] = None,
 ) -> pl.DataFrame:
     """Perform Fourier decomposition on a time series dataset.
 
@@ -42,6 +45,9 @@ def fourier_decomposition(
             This is used to generate temporal features like "week", "month", etc. Defaults to `ds`.
         target_col: The name of the target variable (column) whose seasonal and
             trend components are being decomposed. Defaults to `y`.
+        anomaly_threshold: If set, adds an ``is_anomaly`` boolean column that flags
+            residuals whose absolute value exceeds ``threshold * std(resid)`` per group.
+            Defaults to None (no anomaly column).
 
     Returns:
         A DataFrame with the following columns:
@@ -53,6 +59,7 @@ def fourier_decomposition(
             - `seasonal`: The seasonal component (estimated using Fourier harmonics).
             - `resid`: The residuals, computed as the difference between the original
                 target and the sum of the trend and seasonal components.
+            - `is_anomaly` (optional): Boolean flag if ``anomaly_threshold`` is set.
 
     """
     if pds is None:
@@ -134,5 +141,8 @@ def fourier_decomposition(
         .with_columns(pl.col("trend").add(pl.col("seasonal")).sub(pl.col(target_col)).over(id_col).alias("resid"))
         .select(id_col, time_col, target_col, "trend", "seasonal", "resid")
     )
+
+    if anomaly_threshold is not None:
+        result = flag_anomalies(result, id_col, anomaly_threshold)
 
     return result

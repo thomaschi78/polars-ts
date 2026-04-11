@@ -29,6 +29,16 @@ def mann_kendall(expr: IntoExpr) -> pl.Expr:
     )
 
 
+def sens_slope(expr: IntoExpr) -> pl.Expr:
+    """Sen's slope estimator (median of all pairwise slopes)."""
+    return register_plugin_function(
+        plugin_path=PLUGIN_PATH,
+        function_name="sens_slope",
+        args=expr,
+        is_elementwise=False,
+    )
+
+
 def __getattr__(name: str):
     if name == "Metrics":
         from polars_ts.metrics import Metrics
@@ -50,6 +60,10 @@ def __getattr__(name: str):
         from polars_ts.decomposition.seasonal_decompose_features import seasonal_decompose_features
 
         return seasonal_decompose_features
+    if name == "cusum":
+        from polars_ts.changepoint.cusum import cusum
+
+        return cusum
     raise AttributeError(f"module 'polars_ts' has no attribute {name!r}")
 
 
@@ -64,6 +78,8 @@ __all__ = [
     "compute_pairwise_lcss",
     "compute_pairwise_twe",
     "mann_kendall",
+    "sens_slope",
+    "cusum",
     "fourier_decomposition",
     "seasonal_decomposition",
     "seasonal_decompose_features",
