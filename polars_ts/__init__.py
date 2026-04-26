@@ -198,6 +198,14 @@ def __getattr__(name: str) -> Any:
         from polars_ts import var_model as _var
 
         return getattr(_var, name)
+    if name in {"BayesianVAR", "MinnesotaPrior", "NormalWishartPrior", "BayesianVARResult"}:
+        from polars_ts import bayesian_var as _bvar
+
+        return getattr(_bvar, name)
+    if name == "bayesian_var":
+        from polars_ts.bayesian_var import bayesian_var as _bvar_fn
+
+        return _bvar_fn
     if name == "reconcile":
         from polars_ts.reconciliation import reconcile
 
@@ -394,4 +402,9 @@ __all__ = [
     "kmeans_dba",
     "TimeSeriesKMeans",
     "agglomerative_cluster",
+    "bayesian_var",
+    "BayesianVAR",
+    "MinnesotaPrior",
+    "NormalWishartPrior",
+    "BayesianVARResult",
 ]
