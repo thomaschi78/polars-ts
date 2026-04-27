@@ -179,50 +179,15 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "acf": ("polars_ts.diagnostics", "acf"),
     "pacf": ("polars_ts.diagnostics", "pacf"),
     "ljung_box": ("polars_ts.diagnostics", "ljung_box"),
+    # --- Bayesian VAR ---
+    "bayesian_var": ("polars_ts.bayesian_var", "bayesian_var"),
+    "BayesianVAR": ("polars_ts.bayesian_var", "BayesianVAR"),
+    "MinnesotaPrior": ("polars_ts.bayesian_var", "MinnesotaPrior"),
+    "NormalWishartPrior": ("polars_ts.bayesian_var", "NormalWishartPrior"),
+    "BayesianVARResult": ("polars_ts.bayesian_var", "BayesianVARResult"),
 }
 
 
-        return getattr(_val, name)
-    if name in {"mae", "rmse", "mape", "smape", "mase", "crps"}:
-        from polars_ts.metrics import forecast as _fm
-
-        return getattr(_fm, name)
-    if name in {
-        "naive_forecast",
-        "seasonal_naive_forecast",
-        "moving_average_forecast",
-        "fft_forecast",
-        "RecursiveForecaster",
-        "DirectForecaster",
-        "ses_forecast",
-        "holt_forecast",
-        "holt_winters_forecast",
-    }:
-        from polars_ts import models as _models
-
-        return getattr(_models, name)
-    if name in {"pelt", "bocpd", "regime_detect"}:
-        from polars_ts import changepoint as _cp
-
-        return getattr(_cp, name)
-    if name in {"garch_fit", "garch_forecast", "GARCHResult"}:
-        from polars_ts import volatility as _vol
-
-        return getattr(_vol, name)
-    if name in {"var_fit", "var_forecast", "granger_causality", "VARResult"}:
-        from polars_ts import var_model as _var
-
-        return getattr(_var, name)
-    if name in {"BayesianVAR", "MinnesotaPrior", "NormalWishartPrior", "BayesianVARResult"}:
-        from polars_ts import bayesian_var as _bvar
-
-        return getattr(_bvar, name)
-    if name == "bayesian_var":
-        from polars_ts.bayesian_var import bayesian_var as _bvar_fn
-
-        return _bvar_fn
-    if name == "reconcile":
-        from polars_ts.reconciliation import reconcile
 def __getattr__(name: str) -> Any:
     if name in _LAZY_IMPORTS:
         import importlib
@@ -261,114 +226,5 @@ __all__ = [
     "compute_pairwise_edr",
     "mann_kendall",
     "sens_slope",
-    "cusum",
-    "fourier_decomposition",
-    "seasonal_decomposition",
-    "seasonal_decompose_features",
-    "Metrics",
-    "SCUM",
-    "kmedoids",
-    "knn_classify",
-    "TimeSeriesKNNClassifier",
-    "KShapeClassifier",
-    "TimeSeriesKMedoids",
-    "KShape",
-    "silhouette_score",
-    "silhouette_samples",
-    "davies_bouldin_score",
-    "calinski_harabasz_score",
-    "lag_features",
-    "rolling_features",
-    "calendar_features",
-    "fourier_features",
-    "log_transform",
-    "inverse_log_transform",
-    "boxcox_transform",
-    "inverse_boxcox_transform",
-    "difference",
-    "undifference",
-    "expanding_window_cv",
-    "sliding_window_cv",
-    "rolling_origin_cv",
-    "mae",
-    "rmse",
-    "mape",
-    "smape",
-    "mase",
-    "crps",
-    "naive_forecast",
-    "seasonal_naive_forecast",
-    "moving_average_forecast",
-    "fft_forecast",
-    "RecursiveForecaster",
-    "DirectForecaster",
-    "pelt",
-    "bocpd",
-    "regime_detect",
-    "garch_fit",
-    "garch_forecast",
-    "GARCHResult",
-    "var_fit",
-    "var_forecast",
-    "granger_causality",
-    "VARResult",
-    "reconcile",
-    "to_neuralforecast",
-    "from_neuralforecast",
-    "to_pytorch_forecasting",
-    "from_pytorch_forecasting",
-    "to_hf_dataset",
-    "ForecastEnv",
-    "to_chronos_embeddings",
-    "to_moment_embeddings",
-    "target_encode",
-    "holiday_features",
-    "interaction_features",
-    "time_embeddings",
-    "bias_detect",
-    "bias_correct",
-    "calibration_table",
-    "pit_histogram",
-    "reliability_diagram",
-    "permutation_importance",
-    "isolation_forest_detect",
-    "ses_forecast",
-    "holt_forecast",
-    "holt_winters_forecast",
-    "impute",
-    "detect_outliers",
-    "treat_outliers",
-    "resample",
-    "acf",
-    "pacf",
-    "ljung_box",
-    "ForecastPipeline",
-    "GlobalForecaster",
-    "WeightedEnsemble",
-    "StackingForecaster",
-    "QuantileRegressor",
-    "conformal_interval",
-    "EnbPI",
-    "arima_fit",
-    "arima_forecast",
-    "auto_arima",
-    "hdbscan_cluster",
-    "dbscan_cluster",
-    "spectral_cluster",
-    "auto_cluster",
-    "shapelet_cluster",
-    "UShapeletClusterer",
-    "rocket_features",
-    "minirocket_features",
-    "clara",
-    "clarans",
-    "kmeans_dba",
-    "TimeSeriesKMeans",
-    "agglomerative_cluster",
-    "bayesian_var",
-    "BayesianVAR",
-    "MinnesotaPrior",
-    "NormalWishartPrior",
-    "BayesianVARResult",
     *_LAZY_IMPORTS.keys(),
 ]
