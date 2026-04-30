@@ -175,6 +175,22 @@ class TestCausalImpactPlacebo:
         assert "total_effect" in placebo_result.columns
         assert len(placebo_result) == 1
 
+    def test_placebo_effect_near_zero(self, causal_df, intervention_date):
+        """Placebo effect should be small since there is no treatment before intervention."""
+        ci = CausalImpact()
+        ci.fit(causal_df, intervention_date=intervention_date)
+        placebo_date = date(2024, 1, 1) + timedelta(days=30)
+        placebo_result = ci.placebo_test(causal_df, placebo_date=placebo_date)
+        # Placebo total effect should be much smaller than actual effect
+        r = ci.results()["A"]
+        placebo_effect = abs(placebo_result["total_effect"][0])
+        assert placebo_effect < abs(r.total_effect)
+
+    def test_placebo_before_fit_raises(self):
+        ci = CausalImpact()
+        with pytest.raises(RuntimeError, match="fit"):
+            ci.placebo_test(pl.DataFrame(), placebo_date=date(2024, 1, 15))
+
 
 class TestCausalImpactMultiGroup:
     def test_multi_group(self, intervention_date):
@@ -222,3 +238,12 @@ class TestCausalImpactCoverage:
         width_90 = r90.counterfactual_upper - r90.counterfactual_lower
         width_99 = r99.counterfactual_upper - r99.counterfactual_lower
         assert np.all(width_99 >= width_90 - 1e-10)
+
+
+class TestCausalImpactLevelTrend:
+    def test_level_trend(self, causal_df, intervention_date):
+        ci = CausalImpact(trend="level")
+        ci.fit(causal_df, intervention_date=intervention_date)
+        r = ci.results()["A"]
+        assert r.total_effect > 0
+        assert len(r.point_effect) == 20

@@ -189,6 +189,27 @@ class TestSyntheticControlConvenience:
         assert result.total_effect > 0
 
 
+class TestSyntheticControlSingleDonor:
+    def test_single_donor(self, sc_panel_df, sc_intervention_date):
+        sc = SyntheticControl()
+        sc.fit(
+            sc_panel_df,
+            treated_id="treated",
+            intervention_date=sc_intervention_date,
+            donor_ids=["D1"],
+        )
+        r = sc.result
+        np.testing.assert_allclose(r.weights, [1.0])
+        assert len(r.donor_ids) == 1
+
+    def test_observed_post_on_result(self, sc_panel_df, sc_intervention_date):
+        sc = SyntheticControl()
+        sc.fit(sc_panel_df, treated_id="treated", intervention_date=sc_intervention_date)
+        r = sc.result
+        assert len(r.observed_post) == 15
+        np.testing.assert_allclose(r.point_effect, r.observed_post - r.counterfactual[-15:])
+
+
 class TestSyntheticControlCoverage:
     def test_wider_coverage(self, sc_panel_df, sc_intervention_date):
         sc_90 = SyntheticControl(coverage=0.9)

@@ -64,6 +64,8 @@ class SyntheticControlResult:
         Lower bound of total effect.
     total_effect_upper
         Upper bound of total effect.
+    observed_post
+        Observed values of the treated unit in the post period.
     pre_rmse
         Root mean squared error in the pre-intervention period.
 
@@ -81,6 +83,7 @@ class SyntheticControlResult:
     total_effect: float
     total_effect_lower: float
     total_effect_upper: float
+    observed_post: np.ndarray
     pre_rmse: float
 
 
@@ -240,6 +243,7 @@ class SyntheticControl:
             total_effect=total,
             total_effect_lower=total_lower,
             total_effect_upper=total_upper,
+            observed_post=post_treated,
             pre_rmse=pre_rmse,
         )
         self.is_fitted_ = True
@@ -261,15 +265,16 @@ class SyntheticControl:
 
         """
         r = self.result
+        n_post = len(r.point_effect)
         rows: list[dict[str, Any]] = []
-        for t in range(len(r.point_effect)):
+        for t in range(n_post):
             rows.append(
                 {
                     "step": t + 1,
-                    "observed": float(r.point_effect[t] + r.counterfactual[-len(r.point_effect) + t]),
-                    "counterfactual": float(r.counterfactual[-len(r.point_effect) + t]),
-                    "counterfactual_lower": float(r.counterfactual_lower[-len(r.point_effect) + t]),
-                    "counterfactual_upper": float(r.counterfactual_upper[-len(r.point_effect) + t]),
+                    "observed": float(r.observed_post[t]),
+                    "counterfactual": float(r.counterfactual[-n_post + t]),
+                    "counterfactual_lower": float(r.counterfactual_lower[-n_post + t]),
+                    "counterfactual_upper": float(r.counterfactual_upper[-n_post + t]),
                     "point_effect": float(r.point_effect[t]),
                     "point_effect_lower": float(r.point_effect_lower[t]),
                     "point_effect_upper": float(r.point_effect_upper[t]),
@@ -348,8 +353,7 @@ def _solve_sc_weights(y: np.ndarray, D: np.ndarray) -> np.ndarray:
     """Solve for synthetic control weights using constrained least squares.
 
     Minimizes ||y - D @ w||^2 subject to w >= 0, sum(w) = 1.
-    Falls back to unconstrained + normalization if scipy.optimize
-    is not available.
+    Uses SLSQP from scipy.optimize.
     """
     from scipy.optimize import minimize
 

@@ -48,9 +48,12 @@ class CausalImpactResult:
     cumulative_effect
         Cumulative sum of pointwise effects.
     cumulative_effect_lower
-        Lower credible bound of cumulative effect.
+        Conservative lower bound of cumulative effect (sum of
+        pointwise lower bounds). This is wider than a proper
+        posterior-based interval because it does not account for
+        cross-timestep correlation.
     cumulative_effect_upper
-        Upper credible bound of cumulative effect.
+        Conservative upper bound of cumulative effect.
     total_effect
         Sum of pointwise effects over the post period.
     total_effect_lower
@@ -173,6 +176,7 @@ class CausalImpact:
         self.time_col = time_col
         self.target_col = target_col
         self._states: dict[Any, _FitState] = {}
+        self._intervention_date: date | datetime | None = None
         self.is_fitted_: bool = False
 
     def fit(
@@ -202,6 +206,7 @@ class CausalImpact:
 
         z = norm.ppf(1 - (1 - self.coverage) / 2)
 
+        self._intervention_date = intervention_date
         sorted_df = df.sort(self.id_col, self.time_col)
 
         for group_id, group_df in sorted_df.group_by(self.id_col, maintain_order=True):
@@ -262,21 +267,24 @@ class CausalImpact:
             cf_sum = float(np.sum(counterfactual))
             if abs(cf_sum) > 1e-10:
                 rel = total / cf_sum
-                rel_lower = total_lower / cf_sum
-                rel_upper = total_upper / cf_sum
+                rel_lo = total_lower / cf_sum
+                rel_hi = total_upper / cf_sum
+                # Division by negative cf_sum flips ordering
+                rel_lower = min(rel_lo, rel_hi)
+                rel_upper = max(rel_lo, rel_hi)
             else:
                 rel = rel_lower = rel_upper = 0.0
 
-            # Pre-period diagnostics
-            pre_fitted = _bsts_in_sample(model, pre_y)
+            # Pre-period diagnostics (reuse smoothed states from forecast)
+            kr = bsts_result.kalman_result
+            assert kr.smoothed_states is not None
+            assert kr.smoothed_covs is not None
+            _, H_mat, _, R_mat = model._build_system()
+            pre_fitted = np.array([float((H_mat @ kr.smoothed_states[t]).item()) for t in range(len(pre_y))])
             pre_residuals = pre_y - pre_fitted
             pre_mape = float(np.mean(np.abs(pre_residuals / np.where(np.abs(pre_y) > 1e-10, pre_y, 1.0))))
 
             # Pre-period coverage: fraction of obs inside credible interval
-            kr = bsts_result.kalman_result
-            assert kr.smoothed_states is not None
-            assert kr.smoothed_covs is not None
-            F_mat, H_mat, _, R_mat = model._build_system()
             pre_fitted_var = np.array(
                 [float((H_mat @ kr.smoothed_covs[t] @ H_mat.T + R_mat).item()) for t in range(len(pre_y))]
             )
@@ -405,8 +413,10 @@ class CausalImpact:
         """Run a placebo test at a date before the actual intervention.
 
         Fits the model pretending ``placebo_date`` is the intervention,
-        using only pre-intervention data. If the model is well-specified,
-        the estimated effect should be near zero.
+        using only data from the pre-intervention period (data after
+        the real intervention is excluded to avoid contamination).
+        If the model is well-specified, the estimated effect should
+        be near zero.
 
         Parameters
         ----------
@@ -422,6 +432,12 @@ class CausalImpact:
             total_effect_upper, relative_effect.
 
         """
+        if not self.is_fitted_ or self._intervention_date is None:
+            raise RuntimeError("Call fit() before placebo_test().")
+
+        # Filter out post-intervention data to avoid contamination
+        pre_only = df.filter(pl.col(self.time_col) < self._intervention_date)
+
         placebo = CausalImpact(
             trend=self.trend,
             seasonal=self.seasonal,
@@ -434,18 +450,8 @@ class CausalImpact:
             time_col=self.time_col,
             target_col=self.target_col,
         )
-        placebo.fit(df, intervention_date=placebo_date)
+        placebo.fit(pre_only, intervention_date=placebo_date)
         return placebo.summary()
-
-
-def _bsts_in_sample(model: BSTS, y: np.ndarray) -> np.ndarray:
-    """Compute BSTS in-sample fitted values from smoothed states."""
-    result = model.fit(y)
-    kr = result.kalman_result
-    assert kr.smoothed_states is not None
-    _, H, _, _ = model._build_system()
-    fitted = np.array([float((H @ kr.smoothed_states[t]).item()) for t in range(len(y))])
-    return fitted
 
 
 def causal_impact(
