@@ -190,6 +190,13 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "bayesian_ets": ("polars_ts.models.bayesian_ets", "bayesian_ets"),
     "BayesianETS": ("polars_ts.models.bayesian_ets", "BayesianETS"),
     "ETSPriors": ("polars_ts.models.bayesian_ets", "ETSPriors"),
+    # --- Causal Inference ---
+    "CausalImpact": ("polars_ts.causal.causal_impact", "CausalImpact"),
+    "causal_impact": ("polars_ts.causal.causal_impact", "causal_impact"),
+    "CausalImpactResult": ("polars_ts.causal.causal_impact", "CausalImpactResult"),
+    "SyntheticControl": ("polars_ts.causal.synthetic_control", "SyntheticControl"),
+    "synthetic_control": ("polars_ts.causal.synthetic_control", "synthetic_control"),
+    "SyntheticControlResult": ("polars_ts.causal.synthetic_control", "SyntheticControlResult"),
 }
 
 
