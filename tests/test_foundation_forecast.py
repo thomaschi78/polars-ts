@@ -5,6 +5,7 @@ Uses lightweight mocks to avoid downloading large models during CI.
 
 from __future__ import annotations
 
+import importlib
 from datetime import date, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -30,34 +31,36 @@ def _make_panel_df(n_series: int = 2, n_obs: int = 50) -> pl.DataFrame:
     return pl.DataFrame(rows)
 
 
+def _make_chronos_mock(h: int, n_samples: int = 10):
+    """Create a mock chronos module with pipeline."""
+    torch = pytest.importorskip("torch")
+
+    mock_pipeline = MagicMock()
+    mock_pipeline.predict.return_value = torch.randn(n_samples, h)
+    mock_pipeline.to.return_value = mock_pipeline
+
+    mock_chronos = MagicMock()
+    mock_chronos.ChronosPipeline.from_pretrained.return_value = mock_pipeline
+
+    return mock_chronos
+
+
 # ── ChronosForecaster tests (mocked) ────────────────────────────────────
 
 
 class TestChronosForecaster:
     def test_basic_forecast(self):
-        torch = pytest.importorskip("torch")
-
+        pytest.importorskip("torch")
         h = 5
         n_series = 2
-        n_samples = 10
+        mock_chronos = _make_chronos_mock(h)
 
-        # Mock Chronos pipeline that returns (n_samples, h) shaped samples
-        mock_pipeline = MagicMock()
-        mock_pipeline.predict.return_value = torch.randn(n_samples, h)
-        mock_pipeline.to.return_value = mock_pipeline
+        with patch.dict("sys.modules", {"chronos": mock_chronos}):
+            from polars_ts.adapters import foundation_forecast
 
-        mock_pipeline_cls = MagicMock()
-        mock_pipeline_cls.from_pretrained.return_value = mock_pipeline
-
-        with patch(
-            "polars_ts.adapters.foundation_forecast.ChronosPipeline",
-            mock_pipeline_cls,
-        ):
-            from polars_ts.adapters.foundation_forecast import ChronosForecaster
-
-            forecaster = ChronosForecaster(model_name="amazon/chronos-t5-small")
-            df = _make_panel_df(n_series=n_series)
-            result = forecaster.predict(df, h=h)
+            importlib.reload(foundation_forecast)
+            forecaster = foundation_forecast.ChronosForecaster(model_name="amazon/chronos-t5-small")
+            result = forecaster.predict(_make_panel_df(n_series=n_series), h=h)
 
         assert isinstance(result, pl.DataFrame)
         assert len(result) == n_series * h
@@ -66,41 +69,26 @@ class TestChronosForecaster:
         assert "y_hat" in result.columns
 
     def test_prediction_intervals(self):
-        torch = pytest.importorskip("torch")
-
+        pytest.importorskip("torch")
         h = 3
-        mock_pipeline = MagicMock()
-        mock_pipeline.predict.return_value = torch.randn(20, h)
-        mock_pipeline.to.return_value = mock_pipeline
+        mock_chronos = _make_chronos_mock(h, n_samples=20)
 
-        mock_pipeline_cls = MagicMock()
-        mock_pipeline_cls.from_pretrained.return_value = mock_pipeline
+        with patch.dict("sys.modules", {"chronos": mock_chronos}):
+            from polars_ts.adapters import foundation_forecast
 
-        with patch(
-            "polars_ts.adapters.foundation_forecast.ChronosPipeline",
-            mock_pipeline_cls,
-        ):
-            from polars_ts.adapters.foundation_forecast import ChronosForecaster
-
-            forecaster = ChronosForecaster(model_name="test/model")
+            importlib.reload(foundation_forecast)
+            forecaster = foundation_forecast.ChronosForecaster(model_name="test/model")
             result = forecaster.predict(_make_panel_df(n_series=1), h=h)
 
         assert "y_hat_lower" in result.columns
         assert "y_hat_upper" in result.columns
-        # Lower should be <= point <= upper
         assert (result["y_hat_lower"] <= result["y_hat"]).all()
         assert (result["y_hat"] <= result["y_hat_upper"]).all()
 
     def test_custom_columns(self):
-        torch = pytest.importorskip("torch")
-
+        pytest.importorskip("torch")
         h = 2
-        mock_pipeline = MagicMock()
-        mock_pipeline.predict.return_value = torch.randn(10, h)
-        mock_pipeline.to.return_value = mock_pipeline
-
-        mock_pipeline_cls = MagicMock()
-        mock_pipeline_cls.from_pretrained.return_value = mock_pipeline
+        mock_chronos = _make_chronos_mock(h)
 
         df = pl.DataFrame(
             {
@@ -110,13 +98,11 @@ class TestChronosForecaster:
             }
         )
 
-        with patch(
-            "polars_ts.adapters.foundation_forecast.ChronosPipeline",
-            mock_pipeline_cls,
-        ):
-            from polars_ts.adapters.foundation_forecast import ChronosForecaster
+        with patch.dict("sys.modules", {"chronos": mock_chronos}):
+            from polars_ts.adapters import foundation_forecast
 
-            forecaster = ChronosForecaster(
+            importlib.reload(foundation_forecast)
+            forecaster = foundation_forecast.ChronosForecaster(
                 model_name="test/model",
                 id_col="sid",
                 time_col="t",
@@ -129,28 +115,18 @@ class TestChronosForecaster:
         assert len(result) == h
 
     def test_future_dates_generated(self):
-        torch = pytest.importorskip("torch")
-
+        pytest.importorskip("torch")
         h = 5
-        mock_pipeline = MagicMock()
-        mock_pipeline.predict.return_value = torch.randn(10, h)
-        mock_pipeline.to.return_value = mock_pipeline
-
-        mock_pipeline_cls = MagicMock()
-        mock_pipeline_cls.from_pretrained.return_value = mock_pipeline
-
+        mock_chronos = _make_chronos_mock(h)
         df = _make_panel_df(n_series=1, n_obs=30)
 
-        with patch(
-            "polars_ts.adapters.foundation_forecast.ChronosPipeline",
-            mock_pipeline_cls,
-        ):
-            from polars_ts.adapters.foundation_forecast import ChronosForecaster
+        with patch.dict("sys.modules", {"chronos": mock_chronos}):
+            from polars_ts.adapters import foundation_forecast
 
-            forecaster = ChronosForecaster(model_name="test/model")
+            importlib.reload(foundation_forecast)
+            forecaster = foundation_forecast.ChronosForecaster(model_name="test/model")
             result = forecaster.predict(df, h=h)
 
-        # Future dates should continue from last date in data
         last_date = df.filter(pl.col("unique_id") == "A")["ds"].max()
         first_forecast_date = result.filter(pl.col("unique_id") == "A")["ds"].min()
         assert first_forecast_date > last_date
@@ -174,9 +150,8 @@ class TestTimesFMForecaster:
         n_series = 2
 
         mock_model = MagicMock()
-        # TimesFM returns (point_forecasts, quantile_forecasts)
         mock_model.forecast.return_value = (
-            np.random.randn(n_series, h),  # point forecasts
+            np.random.randn(n_series, h),
             None,
         )
 
@@ -184,8 +159,6 @@ class TestTimesFMForecaster:
         mock_timesfm.TimesFm.return_value = mock_model
 
         with patch.dict("sys.modules", {"timesfm": mock_timesfm}):
-            import importlib
-
             from polars_ts.adapters import foundation_forecast
 
             importlib.reload(foundation_forecast)
@@ -203,15 +176,13 @@ class TestTimesFMForecaster:
         mock_model = MagicMock()
         mock_model.forecast.return_value = (
             np.random.randn(n_series, h),
-            np.random.randn(n_series, h, 2),  # 2 quantiles
+            np.random.randn(n_series, h, 2),
         )
 
         mock_timesfm = MagicMock()
         mock_timesfm.TimesFm.return_value = mock_model
 
         with patch.dict("sys.modules", {"timesfm": mock_timesfm}):
-            import importlib
-
             from polars_ts.adapters import foundation_forecast
 
             importlib.reload(foundation_forecast)
@@ -226,29 +197,37 @@ class TestTimesFMForecaster:
 
 class TestMoiraiForecaster:
     def test_basic_forecast(self):
-        torch = pytest.importorskip("torch")
-
+        _torch = pytest.importorskip("torch")
         h = 5
         n_series = 2
         n_samples = 20
 
         mock_pipeline = MagicMock()
+        # Returns per-series: (1, n_samples, h) since predict is called per series
         mock_pipeline.return_value = (
-            torch.randn(n_series, n_samples, h),  # samples
-            torch.randn(n_series, h),  # point forecast
+            _torch.randn(1, n_samples, h),
+            _torch.randn(1, h),
         )
         mock_pipeline.to.return_value = mock_pipeline
 
         mock_moirai_cls = MagicMock()
         mock_moirai_cls.from_pretrained.return_value = mock_pipeline
 
-        with patch(
-            "polars_ts.adapters.foundation_forecast.MoiraiForecast",
-            mock_moirai_cls,
-        ):
-            from polars_ts.adapters.foundation_forecast import MoiraiForecaster
+        mock_uni2ts = MagicMock()
+        mock_uni2ts.model.moirai_forecast.MoiraiForecast = mock_moirai_cls
 
-            forecaster = MoiraiForecaster(model_name="salesforce/moirai-1.1-R-small")
+        with patch.dict(
+            "sys.modules",
+            {
+                "uni2ts": mock_uni2ts,
+                "uni2ts.model": mock_uni2ts.model,
+                "uni2ts.model.moirai_forecast": mock_uni2ts.model.moirai_forecast,
+            },
+        ):
+            from polars_ts.adapters import foundation_forecast
+
+            importlib.reload(foundation_forecast)
+            forecaster = foundation_forecast.MoiraiForecaster(model_name="salesforce/moirai-1.1-R-small")
             result = forecaster.predict(_make_panel_df(n_series=n_series), h=h)
 
         assert isinstance(result, pl.DataFrame)
@@ -263,23 +242,15 @@ class TestMoiraiForecaster:
 
 class TestFoundationForecast:
     def test_chronos_shorthand(self):
-        torch = pytest.importorskip("torch")
-
+        pytest.importorskip("torch")
         h = 3
-        mock_pipeline = MagicMock()
-        mock_pipeline.predict.return_value = torch.randn(10, h)
-        mock_pipeline.to.return_value = mock_pipeline
+        mock_chronos = _make_chronos_mock(h)
 
-        mock_pipeline_cls = MagicMock()
-        mock_pipeline_cls.from_pretrained.return_value = mock_pipeline
+        with patch.dict("sys.modules", {"chronos": mock_chronos}):
+            from polars_ts.adapters import foundation_forecast
 
-        with patch(
-            "polars_ts.adapters.foundation_forecast.ChronosPipeline",
-            mock_pipeline_cls,
-        ):
-            from polars_ts.adapters.foundation_forecast import foundation_forecast
-
-            result = foundation_forecast(
+            importlib.reload(foundation_forecast)
+            result = foundation_forecast.foundation_forecast(
                 _make_panel_df(n_series=1),
                 model="chronos",
                 h=h,
@@ -296,23 +267,15 @@ class TestFoundationForecast:
             foundation_forecast(_make_panel_df(), model="nonexistent", h=5)
 
     def test_output_schema(self):
-        torch = pytest.importorskip("torch")
-
+        pytest.importorskip("torch")
         h = 3
-        mock_pipeline = MagicMock()
-        mock_pipeline.predict.return_value = torch.randn(10, h)
-        mock_pipeline.to.return_value = mock_pipeline
+        mock_chronos = _make_chronos_mock(h)
 
-        mock_pipeline_cls = MagicMock()
-        mock_pipeline_cls.from_pretrained.return_value = mock_pipeline
+        with patch.dict("sys.modules", {"chronos": mock_chronos}):
+            from polars_ts.adapters import foundation_forecast
 
-        with patch(
-            "polars_ts.adapters.foundation_forecast.ChronosPipeline",
-            mock_pipeline_cls,
-        ):
-            from polars_ts.adapters.foundation_forecast import foundation_forecast
-
-            result = foundation_forecast(
+            importlib.reload(foundation_forecast)
+            result = foundation_forecast.foundation_forecast(
                 _make_panel_df(n_series=2),
                 model="chronos",
                 h=h,
