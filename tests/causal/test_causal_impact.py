@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from datetime import date, timedelta
 
 import numpy as np
@@ -247,3 +248,88 @@ class TestCausalImpactLevelTrend:
         r = ci.results()["A"]
         assert r.total_effect > 0
         assert len(r.point_effect) == 20
+
+
+class TestCausalImpactCovariates:
+    def test_fit_with_covariates(self, causal_cov_df, intervention_date):
+        ci = CausalImpact(
+            covariates=["weather", "demand"],
+            covariate_role={"weather": "always", "demand": "pre_only"},
+        )
+        ci.fit(causal_cov_df, intervention_date=intervention_date)
+        r = ci.results()["A"]
+        assert r.total_effect > 0
+        assert len(r.point_effect) == 20
+
+    def test_pre_only_excluded_from_counterfactual(self, causal_cov_df, intervention_date):
+        """With 'pre_only' covariates, post-treatment bias is avoided."""
+        ci_with_role = CausalImpact(
+            covariates=["weather", "demand"],
+            covariate_role={"weather": "always", "demand": "pre_only"},
+        )
+        ci_with_role.fit(causal_cov_df, intervention_date=intervention_date)
+        r_role = ci_with_role.results()["A"]
+
+        # demand shifts +5 after treatment; if included as "always",
+        # it would inflate the counterfactual and shrink the effect
+        ci_all_always = CausalImpact(
+            covariates=["weather", "demand"],
+            covariate_role={"weather": "always", "demand": "always"},
+        )
+        ci_all_always.fit(causal_cov_df, intervention_date=intervention_date)
+        r_always = ci_all_always.results()["A"]
+
+        # pre_only correctly excludes demand from post counterfactual,
+        # so it should detect a larger effect than when demand biases it
+        assert r_role.total_effect > r_always.total_effect
+
+    def test_no_covariates_backward_compat(self, causal_df, intervention_date):
+        """Without covariates, behavior is unchanged."""
+        ci = CausalImpact()
+        ci.fit(causal_df, intervention_date=intervention_date)
+        r = ci.results()["A"]
+        assert r.total_effect > 0
+
+    def test_missing_covariate_column_raises(self, causal_df, intervention_date):
+        ci = CausalImpact(covariates=["nonexistent"])
+        with pytest.raises(ValueError, match="nonexistent"):
+            ci.fit(causal_df, intervention_date=intervention_date)
+
+    def test_warning_no_role_specified(self, causal_cov_df, intervention_date):
+        ci = CausalImpact(covariates=["weather", "demand"])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ci.fit(causal_cov_df, intervention_date=intervention_date)
+            role_warnings = [x for x in w if "covariate_role" in str(x.message)]
+            assert len(role_warnings) >= 1
+
+    def test_warning_all_always(self, causal_cov_df, intervention_date):
+        ci = CausalImpact(
+            covariates=["weather", "demand"],
+            covariate_role={"weather": "always", "demand": "always"},
+        )
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ci.fit(causal_cov_df, intervention_date=intervention_date)
+            all_always_warnings = [x for x in w if "All covariates" in str(x.message)]
+            assert len(all_always_warnings) == 1
+
+    def test_convenience_with_covariates(self, causal_cov_df, intervention_date):
+        results = causal_impact(
+            causal_cov_df,
+            intervention_date=intervention_date,
+            covariates=["weather"],
+            covariate_role={"weather": "always"},
+        )
+        assert "A" in results
+        assert results["A"].total_effect > 0
+
+    def test_placebo_with_covariates(self, causal_cov_df, intervention_date):
+        ci = CausalImpact(
+            covariates=["weather"],
+            covariate_role={"weather": "always"},
+        )
+        ci.fit(causal_cov_df, intervention_date=intervention_date)
+        placebo_date = date(2024, 1, 1) + timedelta(days=30)
+        placebo_result = ci.placebo_test(causal_cov_df, placebo_date=placebo_date)
+        assert "total_effect" in placebo_result.columns

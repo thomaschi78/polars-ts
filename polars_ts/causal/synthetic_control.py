@@ -9,6 +9,8 @@ Supports:
 - Prediction intervals via scpi-style uncertainty quantification
   (Cattaneo et al., 2025)
 - Built-in placebo tests across all donor units
+- Covariates with ``covariate_role`` guard to prevent post-treatment
+  bias (issue #185)
 
 References
 ----------
@@ -25,12 +27,14 @@ Quantification for Synthetic Control Methods.* J. Stat. Soft.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import polars as pl
+
+from polars_ts.causal.causal_impact import _validate_covariate_roles
 
 
 @dataclass
@@ -68,6 +72,11 @@ class SyntheticControlResult:
         Observed values of the treated unit in the post period.
     pre_rmse
         Root mean squared error in the pre-intervention period.
+    covariate_balance
+        Pre-period covariate balance between treated and synthetic
+        control. Mapping from covariate name to
+        ``{"treated_mean", "synthetic_mean", "abs_diff"}``.
+        ``None`` if no covariates were used.
 
     """
 
@@ -85,6 +94,7 @@ class SyntheticControlResult:
     total_effect_upper: float
     observed_post: np.ndarray
     pre_rmse: float
+    covariate_balance: dict[str, dict[str, float]] | None = field(default=None)
 
 
 class SyntheticControl:
@@ -94,6 +104,20 @@ class SyntheticControl:
     ----------
     coverage
         Prediction interval coverage (e.g. 0.9 for 90%).
+    covariates
+        Column names of covariates to use in donor weight optimization.
+        Covariates improve matching by considering additional variables
+        beyond the target series.
+    covariate_role
+        Mapping from covariate name to role:
+
+        - ``"always"``: covariate is used in weight optimization and
+          contributes to the post-period counterfactual.
+        - ``"pre_only"``: covariate is used only for pre-period weight
+          optimization and excluded from post-period projection
+          (prevents post-treatment bias).
+
+        Covariates not listed default to ``"always"`` with a warning.
     id_col
         Column identifying each unit.
     time_col
@@ -106,14 +130,19 @@ class SyntheticControl:
     def __init__(
         self,
         coverage: float = 0.9,
+        covariates: list[str] | None = None,
+        covariate_role: dict[str, Literal["pre_only", "always"]] | None = None,
         id_col: str = "unique_id",
         time_col: str = "ds",
         target_col: str = "y",
     ) -> None:
         self.coverage = coverage
+        self.covariates = covariates or []
+        self.covariate_role = covariate_role
         self.id_col = id_col
         self.time_col = time_col
         self.target_col = target_col
+        self._resolved_roles: dict[str, Literal["pre_only", "always"]] = {}
         self._result: SyntheticControlResult | None = None
         self.is_fitted_: bool = False
 
@@ -129,7 +158,8 @@ class SyntheticControl:
         Parameters
         ----------
         df
-            Panel DataFrame with all units (treated + donors).
+            Panel DataFrame with all units (treated + donors), including
+            any columns listed in ``covariates``.
         treated_id
             Identifier of the treated unit.
         intervention_date
@@ -144,6 +174,8 @@ class SyntheticControl:
             Self, for chaining.
 
         """
+        self._resolved_roles = _validate_covariate_roles(self.covariates, self.covariate_role)
+
         sorted_df = df.sort(self.id_col, self.time_col)
         all_ids = sorted_df[self.id_col].unique(maintain_order=True).to_list()
 
@@ -169,8 +201,26 @@ class SyntheticControl:
         if post_mask.sum() == 0:
             raise ValueError("No post-intervention observations found.")
 
+        # Validate covariates
+        for cov in self.covariates:
+            if cov not in df.columns:
+                raise ValueError(f"Covariate {cov!r} not found in DataFrame.")
+            role = self._resolved_roles.get(cov, "always")
+            pre_treated_cov = treated_df.filter(pl.col(self.time_col) < intervention_date)[cov]
+            if pre_treated_cov.null_count() > 0 and role == "pre_only":
+                raise ValueError(
+                    f"'pre_only' covariate {cov!r} has "
+                    f"{pre_treated_cov.null_count()} missing values in "
+                    f"pre-period for treated unit."
+                )
+
         # Build donor matrix (T x n_donors)
         donor_matrix = np.zeros((len(times), len(donor_ids)))
+        # Also build donor covariate matrices if needed
+        donor_cov_matrices: dict[str, np.ndarray] = {}
+        for cov in self.covariates:
+            donor_cov_matrices[cov] = np.zeros((len(times), len(donor_ids)))
+
         valid_donors: list[Any] = []
         col_idx = 0
         for did in donor_ids:
@@ -179,28 +229,74 @@ class SyntheticControl:
             if d_times != times:
                 continue  # skip donors with mismatched time index
             donor_matrix[:, col_idx] = d_df[self.target_col].to_numpy().astype(np.float64)
+            for cov in self.covariates:
+                donor_cov_matrices[cov][:, col_idx] = d_df[cov].to_numpy().astype(np.float64)
             valid_donors.append(did)
             col_idx += 1
 
         donor_matrix = donor_matrix[:, :col_idx]
+        for cov in self.covariates:
+            donor_cov_matrices[cov] = donor_cov_matrices[cov][:, :col_idx]
         if col_idx == 0:
             raise ValueError("No donors with matching time index found.")
 
-        # Solve for weights: minimize ||y_pre - D_pre @ w||^2
-        # subject to w >= 0, sum(w) = 1
+        # Build the matching objective: target + covariates in pre-period
         pre_treated = treated_y[pre_mask]
         pre_donors = donor_matrix[pre_mask]
-        weights = _solve_sc_weights(pre_treated, pre_donors)
 
-        # Construct counterfactual
+        # Augment with covariate matching (all covariates help with pre-period matching)
+        if self.covariates:
+            treated_cov_blocks = []
+            donor_cov_blocks = []
+            for cov in self.covariates:
+                treated_cov_pre = treated_df[cov].to_numpy().astype(np.float64)[pre_mask]
+                donor_cov_pre = donor_cov_matrices[cov][pre_mask]
+                # Normalize covariates relative to target for balanced matching
+                cov_scale = np.std(treated_cov_pre)
+                target_scale = np.std(pre_treated)
+                scale_factor = target_scale / cov_scale if cov_scale > 1e-10 else 1.0
+                treated_cov_blocks.append(treated_cov_pre * scale_factor)
+                donor_cov_blocks.append(donor_cov_pre * scale_factor)
+
+            aug_treated = np.concatenate([pre_treated] + treated_cov_blocks)
+            aug_donors = np.vstack([pre_donors] + donor_cov_blocks)
+            weights = _solve_sc_weights(aug_treated, aug_donors)
+        else:
+            weights = _solve_sc_weights(pre_treated, pre_donors)
+
+        # Construct counterfactual from target series
         counterfactual = donor_matrix @ weights
+
+        # Add "always" covariate contributions to post-period counterfactual
+        always_covs = [c for c, r in self._resolved_roles.items() if r == "always"]
+        if always_covs:
+            for cov in always_covs:
+                treated_cov = treated_df[cov].to_numpy().astype(np.float64)
+                synthetic_cov = donor_cov_matrices[cov] @ weights
+                # Adjust counterfactual by covariate difference
+                cov_diff = treated_cov - synthetic_cov
+                counterfactual = counterfactual + cov_diff
 
         # Pre-period fit quality
         pre_residuals = pre_treated - counterfactual[pre_mask]
         pre_rmse = float(np.sqrt(np.mean(pre_residuals**2)))
 
+        # Covariate balance diagnostics
+        cov_balance: dict[str, dict[str, float]] | None = None
+        if self.covariates:
+            cov_balance = {}
+            for cov in self.covariates:
+                treated_cov_pre = treated_df[cov].to_numpy().astype(np.float64)[pre_mask]
+                synthetic_cov_pre = donor_cov_matrices[cov][pre_mask] @ weights
+                t_mean = float(np.mean(treated_cov_pre))
+                s_mean = float(np.mean(synthetic_cov_pre))
+                cov_balance[cov] = {
+                    "treated_mean": t_mean,
+                    "synthetic_mean": s_mean,
+                    "abs_diff": abs(t_mean - s_mean),
+                }
+
         # Prediction intervals (scpi-style)
-        # Use pre-period residual distribution for uncertainty
         residual_std = float(np.std(pre_residuals, ddof=1)) if len(pre_residuals) > 1 else 0.0
 
         from scipy.stats import norm
@@ -245,6 +341,7 @@ class SyntheticControl:
             total_effect_upper=total_upper,
             observed_post=post_treated,
             pre_rmse=pre_rmse,
+            covariate_balance=cov_balance,
         )
         self.is_fitted_ = True
         return self
@@ -329,6 +426,8 @@ class SyntheticControl:
             try:
                 sc = SyntheticControl(
                     coverage=self.coverage,
+                    covariates=self.covariates if self.covariates else None,
+                    covariate_role=self.covariate_role,
                     id_col=self.id_col,
                     time_col=self.time_col,
                     target_col=self.target_col,
@@ -397,6 +496,8 @@ def synthetic_control(
     intervention_date: date | datetime,
     donor_ids: list[Any] | None = None,
     coverage: float = 0.9,
+    covariates: list[str] | None = None,
+    covariate_role: dict[str, Literal["pre_only", "always"]] | None = None,
     id_col: str = "unique_id",
     time_col: str = "ds",
     target_col: str = "y",
@@ -417,6 +518,10 @@ def synthetic_control(
         Specific donor IDs. ``None`` uses all non-treated units.
     coverage
         Prediction interval coverage.
+    covariates
+        Column names of exogenous covariates.
+    covariate_role
+        Mapping from covariate name to ``"pre_only"`` or ``"always"``.
     id_col, time_col, target_col
         Column names.
 
@@ -427,6 +532,8 @@ def synthetic_control(
     """
     sc = SyntheticControl(
         coverage=coverage,
+        covariates=covariates,
+        covariate_role=covariate_role,
         id_col=id_col,
         time_col=time_col,
         target_col=target_col,
