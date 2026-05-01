@@ -151,7 +151,7 @@ class TestPatchTST:
         df = _make_panel_df(n_series=2, n_obs=80)
         forecaster = PatchTSTForecaster(
             h=5,
-            input_size=30,
+            input_size=32,
             patch_len=8,
             d_model=32,
             n_heads=2,

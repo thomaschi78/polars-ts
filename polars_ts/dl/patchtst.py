@@ -45,7 +45,9 @@ class _PatchTSTNet(nn.Module):
         self.d_model = d_model
 
         # Number of patches (with stride = patch_len)
-        self.n_patches = (input_size - patch_len) // patch_len + 1
+        if input_size % patch_len != 0:
+            raise ValueError(f"input_size ({input_size}) must be divisible by " f"patch_len ({patch_len}).")
+        self.n_patches = input_size // patch_len
 
         # Patch embedding
         self.patch_proj = nn.Linear(patch_len, d_model)
@@ -251,7 +253,12 @@ class PatchTSTForecaster:
 
         with torch.no_grad():
             for i, arr in enumerate(arrays):
-                context = arr[-self.input_size :].astype(np.float64)
+                if len(arr) < self.input_size:
+                    padded = np.zeros(self.input_size, dtype=np.float64)
+                    padded[-len(arr) :] = arr.astype(np.float64)
+                    context = padded
+                else:
+                    context = arr[-self.input_size :].astype(np.float64)
                 x = torch.tensor((context - self._mean) / self._std, dtype=torch.float32).unsqueeze(0)
                 pred = self._model(x).squeeze(0).numpy()
                 all_forecasts[i] = pred * self._std + self._mean
