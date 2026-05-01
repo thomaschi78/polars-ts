@@ -332,12 +332,9 @@ class CausalImpact:
                         raise ValueError(f"Series {gid!r}: covariate {cov!r} not found in DataFrame.")
                     pre_nulls = pre_df[cov].null_count()
                     if pre_nulls > 0:
-                        role = self._resolved_roles.get(cov, "always")
-                        if role == "pre_only":
-                            raise ValueError(
-                                f"Series {gid!r}: 'pre_only' covariate {cov!r} "
-                                f"has {pre_nulls} missing values in pre-period."
-                            )
+                        raise ValueError(
+                            f"Series {gid!r}: covariate {cov!r} " f"has {pre_nulls} missing values in pre-period."
+                        )
 
                 # Build covariate matrices
                 all_covs = list(self.covariates)

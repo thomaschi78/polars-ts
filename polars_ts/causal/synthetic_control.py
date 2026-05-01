@@ -205,11 +205,10 @@ class SyntheticControl:
         for cov in self.covariates:
             if cov not in df.columns:
                 raise ValueError(f"Covariate {cov!r} not found in DataFrame.")
-            role = self._resolved_roles.get(cov, "always")
             pre_treated_cov = treated_df.filter(pl.col(self.time_col) < intervention_date)[cov]
-            if pre_treated_cov.null_count() > 0 and role == "pre_only":
+            if pre_treated_cov.null_count() > 0:
                 raise ValueError(
-                    f"'pre_only' covariate {cov!r} has "
+                    f"Covariate {cov!r} has "
                     f"{pre_treated_cov.null_count()} missing values in "
                     f"pre-period for treated unit."
                 )
@@ -267,19 +266,18 @@ class SyntheticControl:
         # Construct counterfactual from target series
         counterfactual = donor_matrix @ weights
 
-        # Add "always" covariate contributions to post-period counterfactual
+        # Pre-period fit quality (before covariate adjustment)
+        pre_residuals = pre_treated - counterfactual[pre_mask]
+        pre_rmse = float(np.sqrt(np.mean(pre_residuals**2)))
+
+        # Add "always" covariate contributions to post-period counterfactual only
         always_covs = [c for c, r in self._resolved_roles.items() if r == "always"]
         if always_covs:
             for cov in always_covs:
-                treated_cov = treated_df[cov].to_numpy().astype(np.float64)
-                synthetic_cov = donor_cov_matrices[cov] @ weights
-                # Adjust counterfactual by covariate difference
-                cov_diff = treated_cov - synthetic_cov
-                counterfactual = counterfactual + cov_diff
-
-        # Pre-period fit quality
-        pre_residuals = pre_treated - counterfactual[pre_mask]
-        pre_rmse = float(np.sqrt(np.mean(pre_residuals**2)))
+                treated_cov_post = treated_df[cov].to_numpy().astype(np.float64)[post_mask]
+                synthetic_cov_post = donor_cov_matrices[cov][post_mask] @ weights
+                cov_diff_post = treated_cov_post - synthetic_cov_post
+                counterfactual[post_mask] = counterfactual[post_mask] + cov_diff_post
 
         # Covariate balance diagnostics
         cov_balance: dict[str, dict[str, float]] | None = None
