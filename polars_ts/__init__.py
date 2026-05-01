@@ -118,6 +118,9 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "expanding_window_cv": ("polars_ts.validation", "expanding_window_cv"),
     "sliding_window_cv": ("polars_ts.validation", "sliding_window_cv"),
     "rolling_origin_cv": ("polars_ts.validation", "rolling_origin_cv"),
+    # --- Backtesting ---
+    "backtest": ("polars_ts.backtesting", "backtest"),
+    "compare_models": ("polars_ts.backtesting", "compare_models"),
     # --- Models & forecasting ---
     "SCUM": ("polars_ts.models", "SCUM"),
     "naive_forecast": ("polars_ts.models", "naive_forecast"),
