@@ -48,6 +48,7 @@ def test_data():
 
 class TestRocketClassifier:
     def test_fit_predict(self, train_data, test_data):
+        pytest.importorskip("sklearn")
         from polars_ts.classification.rocket_classifier import RocketClassifier
 
         clf = RocketClassifier(n_kernels=100)
@@ -59,6 +60,7 @@ class TestRocketClassifier:
         assert result.shape[0] == 2
 
     def test_accuracy(self, train_data, test_data):
+        pytest.importorskip("sklearn")
         from polars_ts.classification.rocket_classifier import RocketClassifier
 
         clf = RocketClassifier(n_kernels=200)
@@ -77,6 +79,7 @@ class TestRocketClassifier:
             clf.predict(test_data)
 
     def test_self_classification(self, train_data):
+        pytest.importorskip("sklearn")
         from polars_ts.classification.rocket_classifier import RocketClassifier
 
         clf = RocketClassifier(n_kernels=200)
@@ -97,6 +100,7 @@ class TestRocketClassifier:
 
 class TestMiniRocketClassifier:
     def test_fit_predict(self, train_data, test_data):
+        pytest.importorskip("sklearn")
         from polars_ts.classification.rocket_classifier import MiniRocketClassifier
 
         clf = MiniRocketClassifier(n_kernels=100)
@@ -108,6 +112,7 @@ class TestMiniRocketClassifier:
         assert result.shape[0] == 2
 
     def test_accuracy(self, train_data, test_data):
+        pytest.importorskip("sklearn")
         from polars_ts.classification.rocket_classifier import MiniRocketClassifier
 
         clf = MiniRocketClassifier(n_kernels=200)
