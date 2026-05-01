@@ -352,7 +352,7 @@ def compare_models(
     if not models:
         raise ValueError("models must be a non-empty dict")
 
-    all_fold_rows: list[dict[str, Any]] = []
+    all_fold_rows: list[pl.DataFrame] = []
     comparison_rows: list[dict[str, Any]] = []
 
     for model_name, model in models.items():
