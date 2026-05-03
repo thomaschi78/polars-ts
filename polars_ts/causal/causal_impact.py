@@ -11,6 +11,8 @@ Design notes (from issue #148 feedback):
 - Exposes full BSTS spec so priors are never hidden.
 - Pre-period diagnostics run by default.
 - Built-in placebo tests via ``placebo_test``.
+- Covariates with ``covariate_role`` guard to prevent post-treatment
+  bias (issue #185).
 
 References
 ----------
@@ -21,9 +23,10 @@ structural time series models.* Annals of Applied Statistics.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import polars as pl
@@ -116,6 +119,67 @@ class _FitState:
     result: CausalImpactResult | None = None
 
 
+def _validate_covariate_roles(
+    covariates: list[str],
+    covariate_role: dict[str, Literal["pre_only", "always"]] | None,
+) -> dict[str, Literal["pre_only", "always"]]:
+    """Validate and return resolved covariate roles.
+
+    Raises warnings for covariates without explicit role assignment.
+    """
+    if covariate_role is None:
+        if covariates:
+            warnings.warn(
+                "Covariates passed without explicit covariate_role. "
+                "All covariates default to 'always' and will be used in "
+                "post-period counterfactual projection. If any are "
+                "post-treatment variables, this will bias the estimate "
+                "toward zero. Set covariate_role explicitly.",
+                UserWarning,
+                stacklevel=3,
+            )
+        return {c: "always" for c in covariates}
+
+    resolved: dict[str, Literal["pre_only", "always"]] = {}
+    for c in covariates:
+        if c not in covariate_role:
+            warnings.warn(
+                f"Covariate {c!r} has no explicit role in covariate_role. " f"Defaulting to 'always'.",
+                UserWarning,
+                stacklevel=3,
+            )
+            resolved[c] = "always"
+        else:
+            resolved[c] = covariate_role[c]
+
+    if all(r == "always" for r in resolved.values()) and len(resolved) > 0:
+        warnings.warn(
+            "All covariates are marked 'always'. Verify that none are "
+            "post-treatment variables (they would bias the estimate "
+            "toward zero).",
+            UserWarning,
+            stacklevel=3,
+        )
+
+    return resolved
+
+
+def _fit_regression(
+    pre_y: np.ndarray,
+    pre_X: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    """Fit demeaned OLS regression on pre-period data.
+
+    Demeaning avoids the regression absorbing the level/trend that
+    the BSTS model should capture. Returns ``(beta, X_mean, y_mean)``
+    where beta is shape ``(n_covariates,)``.
+    """
+    y_mean = float(np.mean(pre_y))
+    X_mean = np.mean(pre_X, axis=0)
+    beta, _, _, _ = np.linalg.lstsq(pre_X - X_mean, pre_y - y_mean, rcond=None)
+    return beta, X_mean, y_mean
+
+
 class CausalImpact:
     """Bayesian CausalImpact estimator.
 
@@ -136,6 +200,19 @@ class CausalImpact:
         Seasonal component noise standard deviation.
     coverage
         Credible interval coverage (e.g. 0.9 for 90%).
+    covariates
+        Column names of exogenous covariates. When provided, an OLS
+        regression is fit on the pre-period, and the regression
+        component is added to the BSTS counterfactual.
+    covariate_role
+        Mapping from covariate name to role:
+
+        - ``"always"``: covariate is used in both pre- and post-period.
+        - ``"pre_only"``: covariate is used only for pre-period fitting
+          and excluded from post-period counterfactual projection
+          (prevents post-treatment bias).
+
+        Covariates not listed default to ``"always"`` with a warning.
     id_col
         Column identifying each time series.
     time_col
@@ -150,6 +227,11 @@ class CausalImpact:
     pre-period is short (<60 observations). Always inspect ``pre_mape``
     and ``pre_coverage`` diagnostics before trusting effect estimates.
 
+    Post-treatment covariates must be excluded from the counterfactual
+    because they encode the treatment effect as a nuisance variable,
+    biasing the estimate toward zero. Use ``covariate_role="pre_only"``
+    for any variable that may be affected by the intervention.
+
     """
 
     def __init__(
@@ -161,6 +243,8 @@ class CausalImpact:
         sigma_trend: float = 0.01,
         sigma_seasonal: float = 0.01,
         coverage: float = 0.9,
+        covariates: list[str] | None = None,
+        covariate_role: dict[str, Literal["pre_only", "always"]] | None = None,
         id_col: str = "unique_id",
         time_col: str = "ds",
         target_col: str = "y",
@@ -172,9 +256,12 @@ class CausalImpact:
         self.sigma_trend = sigma_trend
         self.sigma_seasonal = sigma_seasonal
         self.coverage = coverage
+        self.covariates = covariates or []
+        self.covariate_role = covariate_role
         self.id_col = id_col
         self.time_col = time_col
         self.target_col = target_col
+        self._resolved_roles: dict[str, Literal["pre_only", "always"]] = {}
         self._states: dict[Any, _FitState] = {}
         self._intervention_date: date | datetime | None = None
         self.is_fitted_: bool = False
@@ -189,7 +276,8 @@ class CausalImpact:
         Parameters
         ----------
         df
-            Panel DataFrame with ``id_col``, ``time_col``, and ``target_col``.
+            Panel DataFrame with ``id_col``, ``time_col``, ``target_col``,
+            and any columns listed in ``covariates``.
             Must contain both pre- and post-intervention observations.
         intervention_date
             The first date/time of the post-intervention period. All
@@ -207,7 +295,11 @@ class CausalImpact:
         z = norm.ppf(1 - (1 - self.coverage) / 2)
 
         self._intervention_date = intervention_date
+        self._resolved_roles = _validate_covariate_roles(self.covariates, self.covariate_role)
         sorted_df = df.sort(self.id_col, self.time_col)
+
+        # Identify "always" covariates for post-period projection
+        always_covs = [c for c, r in self._resolved_roles.items() if r == "always"]
 
         for group_id, group_df in sorted_df.group_by(self.id_col, maintain_order=True):
             gid = group_id[0]
@@ -229,6 +321,38 @@ class CausalImpact:
             pre_y = pre_df[self.target_col].to_numpy().astype(np.float64)
             post_y = post_df[self.target_col].to_numpy().astype(np.float64)
 
+            # Covariate regression
+            reg_post_contribution = np.zeros(len(post_y))
+            bsts_pre_y = pre_y
+
+            if self.covariates:
+                # Validate pre-period covariates have no missing values
+                for cov in self.covariates:
+                    if cov not in group_df.columns:
+                        raise ValueError(f"Series {gid!r}: covariate {cov!r} not found in DataFrame.")
+                    pre_nulls = pre_df[cov].null_count()
+                    if pre_nulls > 0:
+                        raise ValueError(
+                            f"Series {gid!r}: covariate {cov!r} " f"has {pre_nulls} missing values in pre-period."
+                        )
+
+                # Build covariate matrices
+                all_covs = list(self.covariates)
+                pre_X = pre_df.select(all_covs).to_numpy().astype(np.float64)
+                beta, X_mean, _y_mean = _fit_regression(pre_y, pre_X)
+
+                # Remove demeaned regression effect from pre-period target
+                # (level/trend stay for BSTS to model)
+                bsts_pre_y = pre_y - (pre_X - X_mean) @ beta
+
+                # Post-period: only "always" covariates contribute
+                if always_covs:
+                    post_X_always = post_df.select(always_covs).to_numpy().astype(np.float64)
+                    always_idx = [all_covs.index(c) for c in always_covs]
+                    beta_always = beta[always_idx]
+                    X_mean_always = X_mean[always_idx]
+                    reg_post_contribution = (post_X_always - X_mean_always) @ beta_always
+
             model = BSTS(
                 trend=self.trend,
                 seasonal=self.seasonal,
@@ -238,12 +362,13 @@ class CausalImpact:
                 sigma_seasonal=self.sigma_seasonal,
             )
 
-            bsts_result = model.forecast(pre_y, h=len(post_y))
+            bsts_result = model.forecast(bsts_pre_y, h=len(post_y))
 
             assert bsts_result.forecast is not None
             assert bsts_result.forecast_var is not None
 
-            counterfactual = bsts_result.forecast
+            # Counterfactual = BSTS forecast + regression from "always" covariates
+            counterfactual = bsts_result.forecast + reg_post_contribution
             cf_std = np.sqrt(np.maximum(bsts_result.forecast_var, 0.0))
             cf_lower = counterfactual - z * cf_std
             cf_upper = counterfactual + z * cf_std
@@ -280,13 +405,19 @@ class CausalImpact:
             assert kr.smoothed_states is not None
             assert kr.smoothed_covs is not None
             _, H_mat, _, R_mat = model._build_system()
-            pre_fitted = np.array([float((H_mat @ kr.smoothed_states[t]).item()) for t in range(len(pre_y))])
+            pre_fitted_bsts = np.array([float((H_mat @ kr.smoothed_states[t]).item()) for t in range(len(bsts_pre_y))])
+            # Add back demeaned regression contribution for full pre-period fit
+            if self.covariates:
+                pre_X_all = pre_df.select(list(self.covariates)).to_numpy().astype(np.float64)
+                pre_fitted = pre_fitted_bsts + (pre_X_all - X_mean) @ beta
+            else:
+                pre_fitted = pre_fitted_bsts
             pre_residuals = pre_y - pre_fitted
             pre_mape = float(np.mean(np.abs(pre_residuals / np.where(np.abs(pre_y) > 1e-10, pre_y, 1.0))))
 
             # Pre-period coverage: fraction of obs inside credible interval
             pre_fitted_var = np.array(
-                [float((H_mat @ kr.smoothed_covs[t] @ H_mat.T + R_mat).item()) for t in range(len(pre_y))]
+                [float((H_mat @ kr.smoothed_covs[t] @ H_mat.T + R_mat).item()) for t in range(len(bsts_pre_y))]
             )
             pre_std = np.sqrt(np.maximum(pre_fitted_var, 0.0))
             in_interval = np.abs(pre_residuals) <= z * pre_std
@@ -446,6 +577,8 @@ class CausalImpact:
             sigma_trend=self.sigma_trend,
             sigma_seasonal=self.sigma_seasonal,
             coverage=self.coverage,
+            covariates=self.covariates if self.covariates else None,
+            covariate_role=self.covariate_role,
             id_col=self.id_col,
             time_col=self.time_col,
             target_col=self.target_col,
@@ -464,6 +597,8 @@ def causal_impact(
     sigma_trend: float = 0.01,
     sigma_seasonal: float = 0.01,
     coverage: float = 0.9,
+    covariates: list[str] | None = None,
+    covariate_role: dict[str, Literal["pre_only", "always"]] | None = None,
     id_col: str = "unique_id",
     time_col: str = "ds",
     target_col: str = "y",
@@ -482,6 +617,10 @@ def causal_impact(
         BSTS model configuration (see :class:`CausalImpact`).
     coverage
         Credible interval coverage.
+    covariates
+        Column names of exogenous covariates.
+    covariate_role
+        Mapping from covariate name to ``"pre_only"`` or ``"always"``.
     id_col, time_col, target_col
         Column names.
 
@@ -499,6 +638,8 @@ def causal_impact(
         sigma_trend=sigma_trend,
         sigma_seasonal=sigma_seasonal,
         coverage=coverage,
+        covariates=covariates,
+        covariate_role=covariate_role,
         id_col=id_col,
         time_col=time_col,
         target_col=target_col,

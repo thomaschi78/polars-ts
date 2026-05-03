@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from datetime import date, timedelta
 
 import numpy as np
@@ -222,3 +223,78 @@ class TestSyntheticControlCoverage:
         width_99 = sc_99.result.counterfactual_upper - sc_99.result.counterfactual_lower
         # Post-period intervals should be wider for 99%
         assert np.all(width_99[-15:] >= width_90[-15:] - 1e-10)
+
+
+class TestSyntheticControlCovariates:
+    def test_fit_with_covariates(self, sc_panel_cov_df, sc_intervention_date):
+        sc = SyntheticControl(
+            covariates=["temperature"],
+            covariate_role={"temperature": "always"},
+        )
+        sc.fit(sc_panel_cov_df, treated_id="treated", intervention_date=sc_intervention_date)
+        r = sc.result
+        assert r.total_effect > 0
+        assert len(r.point_effect) == 15
+
+    def test_covariate_balance_diagnostics(self, sc_panel_cov_df, sc_intervention_date):
+        sc = SyntheticControl(
+            covariates=["temperature"],
+            covariate_role={"temperature": "always"},
+        )
+        sc.fit(sc_panel_cov_df, treated_id="treated", intervention_date=sc_intervention_date)
+        r = sc.result
+        assert r.covariate_balance is not None
+        assert "temperature" in r.covariate_balance
+        balance = r.covariate_balance["temperature"]
+        assert "treated_mean" in balance
+        assert "synthetic_mean" in balance
+        assert "abs_diff" in balance
+        assert balance["abs_diff"] >= 0.0
+
+    def test_no_covariates_no_balance(self, sc_panel_df, sc_intervention_date):
+        sc = SyntheticControl()
+        sc.fit(sc_panel_df, treated_id="treated", intervention_date=sc_intervention_date)
+        assert sc.result.covariate_balance is None
+
+    def test_pre_only_covariates(self, sc_panel_cov_df, sc_intervention_date):
+        sc = SyntheticControl(
+            covariates=["temperature"],
+            covariate_role={"temperature": "pre_only"},
+        )
+        sc.fit(sc_panel_cov_df, treated_id="treated", intervention_date=sc_intervention_date)
+        r = sc.result
+        assert r.total_effect > 0
+
+    def test_missing_covariate_column_raises(self, sc_panel_df, sc_intervention_date):
+        sc = SyntheticControl(covariates=["nonexistent"])
+        with pytest.raises(ValueError, match="nonexistent"):
+            sc.fit(sc_panel_df, treated_id="treated", intervention_date=sc_intervention_date)
+
+    def test_warning_no_role(self, sc_panel_cov_df, sc_intervention_date):
+        sc = SyntheticControl(covariates=["temperature"])
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            sc.fit(sc_panel_cov_df, treated_id="treated", intervention_date=sc_intervention_date)
+            role_warnings = [x for x in w if "covariate_role" in str(x.message)]
+            assert len(role_warnings) >= 1
+
+    def test_convenience_with_covariates(self, sc_panel_cov_df, sc_intervention_date):
+        result = synthetic_control(
+            sc_panel_cov_df,
+            treated_id="treated",
+            intervention_date=sc_intervention_date,
+            covariates=["temperature"],
+            covariate_role={"temperature": "always"},
+        )
+        assert isinstance(result, SyntheticControlResult)
+        assert result.total_effect > 0
+        assert result.covariate_balance is not None
+
+    def test_placebo_with_covariates(self, sc_panel_cov_df, sc_intervention_date):
+        sc = SyntheticControl(
+            covariates=["temperature"],
+            covariate_role={"temperature": "always"},
+        )
+        sc.fit(sc_panel_cov_df, treated_id="treated", intervention_date=sc_intervention_date)
+        placebo = sc.placebo_test(sc_panel_cov_df, intervention_date=sc_intervention_date)
+        assert len(placebo) >= 2
