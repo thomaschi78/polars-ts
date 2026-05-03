@@ -22,6 +22,10 @@ _IMPORTS: dict[str, tuple[str, str]] = {
     "agglomerative_cluster": ("polars_ts.clustering.hierarchical", "agglomerative_cluster"),
     "ContrastiveClusterer": ("polars_ts.clustering.contrastive", "ContrastiveClusterer"),
     "contrastive_cluster": ("polars_ts.clustering.contrastive", "contrastive_cluster"),
+    "DECClusterer": ("polars_ts.clustering.deep_cluster", "DECClusterer"),
+    "IDECClusterer": ("polars_ts.clustering.deep_cluster", "IDECClusterer"),
+    "dec_cluster": ("polars_ts.clustering.deep_cluster", "dec_cluster"),
+    "idec_cluster": ("polars_ts.clustering.deep_cluster", "idec_cluster"),
 }
 
 __getattr__, __all__ = make_getattr(_IMPORTS, __name__)
