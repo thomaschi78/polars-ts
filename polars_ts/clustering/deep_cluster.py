@@ -88,6 +88,7 @@ class DECClusterer:
 
     def fit(self, df: pl.DataFrame) -> DECClusterer:
         """Pretrain autoencoder, then fine-tune with clustering loss."""
+        id_dtype = df[self.id_col].dtype
         ids, X_t = self._prepare_data(df)
 
         torch.manual_seed(self.seed)
@@ -125,8 +126,8 @@ class DECClusterer:
         self.embeddings_ = embeddings
         self.labels_ = pl.DataFrame(
             {self.id_col: ids, "cluster": assignments},
-            schema={self.id_col: df[self.id_col].dtype, "cluster": pl.Int64},
-        )
+            schema={self.id_col: pl.String, "cluster": pl.Int64},
+        ).with_columns(pl.col(self.id_col).cast(id_dtype))
         return self
 
     def _prepare_data(self, df: pl.DataFrame) -> tuple[list[str], torch.Tensor]:

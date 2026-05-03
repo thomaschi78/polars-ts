@@ -615,6 +615,22 @@ class TestContrastiveClustererEdgeCases:
         cc.fit(cluster_data)
         assert cc.labels_["unique_id"].dtype == cluster_data["unique_id"].dtype
 
+    def test_integer_id_col(self):
+        """Integer ID columns should not crash (regression test)."""
+        pytest.importorskip("torch")
+        from polars_ts.clustering.contrastive import ContrastiveClusterer
+
+        df = pl.DataFrame(
+            {
+                "unique_id": [1] * 8 + [2] * 8 + [3] * 8,
+                "y": [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0] * 2 + [8.0, 7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0],
+            }
+        )
+        cc = ContrastiveClusterer(n_clusters=2, max_epochs=3, embedding_dim=8, n_filters=4)
+        cc.fit(df)
+        assert cc.labels_["unique_id"].dtype == pl.Int64
+        assert sorted(cc.labels_["unique_id"].to_list()) == [1, 2, 3]
+
     def test_embeddings_finite(self, cluster_data):
         """All embedding values should be finite (no NaN or Inf)."""
         pytest.importorskip("torch")

@@ -92,6 +92,7 @@ class ContrastiveClusterer:
 
     def fit(self, df: pl.DataFrame) -> ContrastiveClusterer:
         """Train encoder via contrastive learning and cluster embeddings."""
+        id_dtype = df[self.id_col].dtype
         ids = sorted(df[self.id_col].unique().cast(pl.String).to_list())
         n = len(ids)
 
@@ -160,8 +161,8 @@ class ContrastiveClusterer:
         self.embeddings_ = embeddings
         self.labels_ = pl.DataFrame(
             {self.id_col: ids, "cluster": assignments},
-            schema={self.id_col: df[self.id_col].dtype, "cluster": pl.Int64},
-        )
+            schema={self.id_col: pl.String, "cluster": pl.Int64},
+        ).with_columns(pl.col(self.id_col).cast(id_dtype))
         return self
 
     @staticmethod
