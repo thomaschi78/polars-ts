@@ -103,6 +103,7 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "KShapeClassifier": ("polars_ts.classification.kshape_classifier", "KShapeClassifier"),
     # --- Feature engineering ---
     "lag_features": ("polars_ts.features", "lag_features"),
+    "covariate_lag_features": ("polars_ts.features", "covariate_lag_features"),
     "rolling_features": ("polars_ts.features", "rolling_features"),
     "calendar_features": ("polars_ts.features", "calendar_features"),
     "fourier_features": ("polars_ts.features", "fourier_features"),
@@ -123,6 +124,9 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "expanding_window_cv": ("polars_ts.validation", "expanding_window_cv"),
     "sliding_window_cv": ("polars_ts.validation", "sliding_window_cv"),
     "rolling_origin_cv": ("polars_ts.validation", "rolling_origin_cv"),
+    # --- Backtesting ---
+    "backtest": ("polars_ts.backtesting", "backtest"),
+    "compare_models": ("polars_ts.backtesting", "compare_models"),
     # --- Models & forecasting ---
     "SCUM": ("polars_ts.models", "SCUM"),
     "naive_forecast": ("polars_ts.models", "naive_forecast"),
@@ -155,6 +159,12 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "var_forecast": ("polars_ts.var_model", "var_forecast"),
     "granger_causality": ("polars_ts.var_model", "granger_causality"),
     "VARResult": ("polars_ts.var_model", "VARResult"),
+    # --- Bayesian VAR ---
+    "bayesian_var": ("polars_ts.bayesian_var", "bayesian_var"),
+    "BayesianVAR": ("polars_ts.bayesian_var", "BayesianVAR"),
+    "MinnesotaPrior": ("polars_ts.bayesian_var", "MinnesotaPrior"),
+    "NormalWishartPrior": ("polars_ts.bayesian_var", "NormalWishartPrior"),
+    "BayesianVARResult": ("polars_ts.bayesian_var", "BayesianVARResult"),
     # --- Reconciliation ---
     "reconcile": ("polars_ts.reconciliation", "reconcile"),
     # --- Adapters ---
@@ -185,6 +195,17 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "acf": ("polars_ts.diagnostics", "acf"),
     "pacf": ("polars_ts.diagnostics", "pacf"),
     "ljung_box": ("polars_ts.diagnostics", "ljung_box"),
+    # --- Bayesian ETS ---
+    "bayesian_ets": ("polars_ts.models.bayesian_ets", "bayesian_ets"),
+    "BayesianETS": ("polars_ts.models.bayesian_ets", "BayesianETS"),
+    "ETSPriors": ("polars_ts.models.bayesian_ets", "ETSPriors"),
+    # --- Causal Inference ---
+    "CausalImpact": ("polars_ts.causal.causal_impact", "CausalImpact"),
+    "causal_impact": ("polars_ts.causal.causal_impact", "causal_impact"),
+    "CausalImpactResult": ("polars_ts.causal.causal_impact", "CausalImpactResult"),
+    "SyntheticControl": ("polars_ts.causal.synthetic_control", "SyntheticControl"),
+    "synthetic_control": ("polars_ts.causal.synthetic_control", "synthetic_control"),
+    "SyntheticControlResult": ("polars_ts.causal.synthetic_control", "SyntheticControlResult"),
 }
 
 
@@ -205,10 +226,8 @@ def __getattr__(name: str) -> Any:
         "bsts_forecast",
         "GaussianProcessTS",
         "gp_forecast",
-        "BayesianAnomalyDetector",
-        "bayesian_anomaly_score",
-        "ParticleFilter",
-        "particle_filter",
+        "MCMCForecaster",
+        "mcmc_forecast",
     }:
         from polars_ts import bayesian as _bayes
 
