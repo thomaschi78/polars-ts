@@ -18,6 +18,7 @@ class ForecastPlan:
     horizon: int
     rationale: str
     config: dict[str, dict] = field(default_factory=dict)
+    ensemble: bool = False
 
 
 class PlannerAgent:
@@ -90,11 +91,29 @@ class PlannerAgent:
                 candidates.append("ses")
                 rationale_parts.append("SES as additional candidate for longer series.")
 
+        # Enable ensemble when 3+ candidates available
+        use_ensemble = len(candidates) >= 3
+        if use_ensemble:
+            rationale_parts.append("3+ candidates — ensemble enabled for adaptive combination.")
+
+        # Enhance rationale with LLM if available
         rationale = " ".join(rationale_parts)
+        if not isinstance(self.backend, RuleBasedBackend):
+            llm_response = self.backend.complete(
+                f"Given these time series characteristics:\n"
+                f"- {n} observations per series, {curation.n_series} series\n"
+                f"- Trend: {curation.has_trend}, Period: {curation.detected_period}\n"
+                f"- Stationary: {curation.is_stationary}\n"
+                f"Selected candidates: {candidates}\n"
+                f"Provide a brief rationale for this model selection."
+            )
+            if llm_response:
+                rationale = llm_response
 
         return ForecastPlan(
             candidates=candidates,
             horizon=self.horizon,
             rationale=rationale,
             config=config,
+            ensemble=use_ensemble,
         )

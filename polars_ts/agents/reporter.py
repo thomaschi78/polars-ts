@@ -50,12 +50,16 @@ class ReporterAgent:
         if curation.detected_period:
             sections.append(f"- **Detected period**: {curation.detected_period}")
         sections.append(f"- **Trend**: {'Yes' if curation.has_trend else 'No'}")
+        sections.append(f"- **Stationary**: {'Yes' if curation.is_stationary else 'No'}")
+        if curation.recommended_lookback:
+            sections.append(f"- **Recommended lookback**: {curation.recommended_lookback}")
         sections.append("")
 
         # Model Selection
         sections.append("## Model Selection\n")
         sections.append(f"- **Candidates**: {', '.join(plan.candidates)}")
         sections.append(f"- **Horizon**: {plan.horizon}")
+        sections.append(f"- **Ensemble**: {'Yes' if plan.ensemble else 'No'}")
         sections.append(f"- **Rationale**: {plan.rationale}")
         sections.append("")
 
@@ -65,8 +69,19 @@ class ReporterAgent:
         sections.append("- **Model scores (MAE)**:")
         for name, score in sorted(result.model_scores.items()):
             sections.append(f"  - {name}: {score:.4f}")
+        if result.ensemble_weights:
+            sections.append("- **Ensemble weights**:")
+            for name, weight in sorted(result.ensemble_weights.items()):
+                sections.append(f"  - {name}: {weight:.3f}")
         sections.append(f"- **Prediction rows**: {len(result.predictions)}")
         sections.append("")
 
         md = "\n".join(sections)
+
+        # Enhance with LLM narrative if available
+        if not isinstance(self.backend, RuleBasedBackend):
+            llm_narrative = self.backend.complete(f"Write a brief executive summary for this forecast report:\n{md}")
+            if llm_narrative:
+                md = f"## Executive Summary\n\n{llm_narrative}\n\n{md}"
+
         return ForecastReport(markdown=md)

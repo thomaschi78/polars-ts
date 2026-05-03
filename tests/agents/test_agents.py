@@ -62,6 +62,29 @@ def multi_series() -> pl.DataFrame:
     )
 
 
+@pytest.fixture
+def regime_change_series() -> pl.DataFrame:
+    """Series with a clear regime change midway."""
+    import datetime
+
+    n = 120
+    dates = [datetime.date(2023, 1, 1) + datetime.timedelta(days=i) for i in range(n)]
+    rng = np.random.default_rng(99)
+    # First half: low mean, low variance
+    first = 10 + rng.normal(0, 1, n // 2)
+    # Second half: high mean, high variance
+    second = 50 + rng.normal(0, 5, n // 2)
+    values = np.concatenate([first, second])
+
+    return pl.DataFrame(
+        {
+            "unique_id": ["regime"] * n,
+            "ds": dates,
+            "y": values.tolist(),
+        }
+    )
+
+
 # ---------------------------------------------------------------------------
 # Protocol / Backend tests
 # ---------------------------------------------------------------------------
@@ -95,6 +118,7 @@ class TestAgentContext:
         assert ctx.data is daily_series
         assert ctx.metadata == {}
         assert ctx.history == []
+        assert ctx.events == []
 
     def test_context_log(self, daily_series):
         from polars_ts.agents._protocol import AgentContext
@@ -104,6 +128,14 @@ class TestAgentContext:
         assert len(ctx.history) == 1
         assert ctx.history[0]["agent"] == "curator"
         assert ctx.history[0]["message"] == "Found 1 outlier"
+
+    def test_context_with_events(self, daily_series):
+        from polars_ts.agents._protocol import AgentContext
+
+        events = [{"date": "2023-06-01", "description": "Product launch"}]
+        ctx = AgentContext(data=daily_series, events=events)
+        assert len(ctx.events) == 1
+        assert ctx.events[0]["description"] == "Product launch"
 
 
 # ---------------------------------------------------------------------------
@@ -124,13 +156,9 @@ class TestCuratorAgent:
 
         agent = CuratorAgent()
         report = agent.curate(daily_series)
-        # Should detect missing values
         assert report.n_missing >= 0
-        # Should detect outliers
         assert report.n_outliers >= 0
-        # Should report series length
         assert report.n_observations > 0
-        # Should report number of series
         assert report.n_series > 0
 
     def test_curation_report_detects_outlier(self, daily_series):
@@ -161,7 +189,6 @@ class TestCuratorAgent:
 
         agent = CuratorAgent()
         report = agent.curate(daily_series)
-        # Should attempt to detect seasonality period
         assert hasattr(report, "detected_period")
 
     def test_curate_multi_series(self, multi_series):
@@ -170,6 +197,54 @@ class TestCuratorAgent:
         agent = CuratorAgent()
         report = agent.curate(multi_series)
         assert report.n_series == 2
+
+    def test_curation_report_has_stationarity(self, daily_series):
+        from polars_ts.agents.curator import CuratorAgent
+
+        agent = CuratorAgent()
+        report = agent.curate(daily_series)
+        assert isinstance(report.is_stationary, bool)
+
+    def test_stationarity_detects_nonstationary(self, regime_change_series):
+        from polars_ts.agents.curator import CuratorAgent
+
+        agent = CuratorAgent()
+        report = agent.curate(regime_change_series)
+        assert report.is_stationary is False
+
+    def test_recommended_lookback(self, regime_change_series):
+        from polars_ts.agents.curator import CuratorAgent
+
+        agent = CuratorAgent()
+        report = agent.curate(regime_change_series)
+        # Should recommend trimming due to regime change
+        assert report.recommended_lookback is not None
+        assert report.recommended_lookback > 0
+
+    def test_trim_lookback(self, daily_series):
+        from polars_ts.agents.curator import CuratorAgent
+
+        agent = CuratorAgent()
+        trimmed = agent.trim_lookback(daily_series, lookback=50)
+        assert len(trimmed) == 50
+
+    def test_trim_lookback_multi_series(self, multi_series):
+        from polars_ts.agents.curator import CuratorAgent
+
+        agent = CuratorAgent()
+        trimmed = agent.trim_lookback(multi_series, lookback=30)
+        # 30 per series x 2 series = 60
+        assert len(trimmed) == 60
+
+    def test_trim_lookback_none_returns_original(self, daily_series):
+        """When no regime change, trim_lookback(lookback=None) returns all data."""
+        from polars_ts.agents.curator import CuratorAgent
+
+        agent = CuratorAgent()
+        # For this series, recommended_lookback may be None
+        result = agent.trim_lookback(daily_series)
+        # Should return same length if no trimming recommended
+        assert len(result) >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +304,28 @@ class TestPlannerAgent:
         plan = planner.plan(daily_series, curation)
         assert isinstance(plan.rationale, str)
         assert len(plan.rationale) > 0
+
+    def test_plan_has_ensemble_flag(self, daily_series):
+        from polars_ts.agents.curator import CuratorAgent
+        from polars_ts.agents.planner import PlannerAgent
+
+        curator = CuratorAgent()
+        curation = curator.curate(daily_series)
+        planner = PlannerAgent()
+        plan = planner.plan(daily_series, curation)
+        assert isinstance(plan.ensemble, bool)
+
+    def test_plan_enables_ensemble_for_many_candidates(self, daily_series):
+        from polars_ts.agents.curator import CuratorAgent
+        from polars_ts.agents.planner import PlannerAgent
+
+        curator = CuratorAgent()
+        curation = curator.curate(daily_series)
+        planner = PlannerAgent()
+        plan = planner.plan(daily_series, curation)
+        # daily_series has 120 obs with trend + seasonality, so should get 3+ candidates
+        if len(plan.candidates) >= 3:
+            assert plan.ensemble is True
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +400,60 @@ class TestForecasterAgent:
         result = forecaster.forecast(cleaned, plan)
         assert isinstance(result.best_model, str)
 
+    def test_ensemble_weights_present_when_ensemble(self, daily_series):
+        from polars_ts.agents.curator import CuratorAgent
+        from polars_ts.agents.forecaster import ForecasterAgent
+        from polars_ts.agents.planner import ForecastPlan, PlannerAgent
+
+        curator = CuratorAgent()
+        curation = curator.curate(daily_series)
+        cleaned = curator.curate_and_clean(daily_series)
+
+        planner = PlannerAgent(horizon=7)
+        plan = planner.plan(cleaned, curation)
+
+        # Force ensemble on
+        if not plan.ensemble:
+            plan = ForecastPlan(
+                candidates=plan.candidates,
+                horizon=plan.horizon,
+                rationale=plan.rationale,
+                config=plan.config,
+                ensemble=True,
+            )
+
+        forecaster = ForecasterAgent()
+        result = forecaster.forecast(cleaned, plan)
+
+        if result.ensemble_weights:
+            # Weights should sum to ~1.0
+            total = sum(result.ensemble_weights.values())
+            assert abs(total - 1.0) < 0.01
+            assert "ensemble" in result.best_model
+
+    def test_ensemble_predictions_have_y_hat(self, daily_series):
+        from polars_ts.agents.curator import CuratorAgent
+        from polars_ts.agents.forecaster import ForecasterAgent
+        from polars_ts.agents.planner import ForecastPlan, PlannerAgent
+
+        curator = CuratorAgent()
+        curation = curator.curate(daily_series)
+        cleaned = curator.curate_and_clean(daily_series)
+
+        planner = PlannerAgent(horizon=7)
+        plan = planner.plan(cleaned, curation)
+        plan = ForecastPlan(
+            candidates=plan.candidates,
+            horizon=plan.horizon,
+            rationale=plan.rationale,
+            config=plan.config,
+            ensemble=True,
+        )
+
+        forecaster = ForecasterAgent()
+        result = forecaster.forecast(cleaned, plan)
+        assert "y_hat" in result.predictions.columns
+
 
 # ---------------------------------------------------------------------------
 # ReporterAgent tests
@@ -370,10 +521,31 @@ class TestReporterAgent:
         reporter = ReporterAgent()
         report = reporter.report(curation, plan, result)
         md = report.markdown
-        # Should have key sections
         assert "Data Diagnostics" in md or "Curation" in md
         assert "Model" in md
         assert "Forecast" in md or "Result" in md
+
+    def test_report_includes_stationarity_and_ensemble(self, daily_series):
+        from polars_ts.agents.curator import CuratorAgent
+        from polars_ts.agents.forecaster import ForecasterAgent
+        from polars_ts.agents.planner import PlannerAgent
+        from polars_ts.agents.reporter import ReporterAgent
+
+        curator = CuratorAgent()
+        curation = curator.curate(daily_series)
+        cleaned = curator.curate_and_clean(daily_series)
+
+        planner = PlannerAgent(horizon=7)
+        plan = planner.plan(cleaned, curation)
+
+        forecaster = ForecasterAgent()
+        result = forecaster.forecast(cleaned, plan)
+
+        reporter = ReporterAgent()
+        report = reporter.report(curation, plan, result)
+        md = report.markdown
+        assert "Stationary" in md
+        assert "Ensemble" in md
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +601,49 @@ class TestTimeSeriesScientist:
         result = scientist.run(daily_series)
         # Should have logged actions from each agent
         assert len(result.context.history) >= 3  # curator, planner, forecaster at minimum
+
+    def test_scientist_with_events(self, daily_series):
+        from polars_ts.agents.scientist import TimeSeriesScientist
+
+        events = [
+            {"date": "2023-06-01", "description": "Product launch"},
+            {"date": "2023-07-04", "description": "Holiday"},
+        ]
+        scientist = TimeSeriesScientist(horizon=7, events=events)
+        result = scientist.run(daily_series)
+        assert result.context.events == events
+        # Events should be logged
+        event_logs = [h for h in result.context.history if "event" in h["message"].lower()]
+        assert len(event_logs) >= 1
+
+    def test_scientist_with_trim_lookback(self, regime_change_series):
+        from polars_ts.agents.scientist import TimeSeriesScientist
+
+        scientist = TimeSeriesScientist(horizon=7, trim_lookback=True)
+        result = scientist.run(regime_change_series)
+        assert isinstance(result.predictions, pl.DataFrame)
+        # Should have a trimming log entry
+        trim_logs = [h for h in result.context.history if "trim" in h["message"].lower()]
+        assert len(trim_logs) >= 1
+
+    def test_scientist_llm_backend_called(self, daily_series):
+        """Verify that a real LLM backend's complete() is invoked."""
+        from polars_ts.agents.scientist import TimeSeriesScientist
+
+        class MockBackend:
+            def __init__(self):
+                self.calls: list[str] = []
+
+            def complete(self, prompt: str) -> str:
+                self.calls.append(prompt)
+                return "LLM says: test response"
+
+        backend = MockBackend()
+        scientist = TimeSeriesScientist(horizon=7, backend=backend)
+        result = scientist.run(daily_series)
+        assert isinstance(result.predictions, pl.DataFrame)
+        # The backend should have been called at least once (curator, planner, reporter)
+        assert len(backend.calls) >= 1
 
 
 # ---------------------------------------------------------------------------

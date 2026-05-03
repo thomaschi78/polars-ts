@@ -20,6 +20,7 @@ class ForecastAgentResult:
     best_model: str
     model_scores: dict[str, float]
     all_predictions: dict[str, pl.DataFrame] = field(default_factory=dict)
+    ensemble_weights: dict[str, float] = field(default_factory=dict)
 
 
 # Map plan candidate names to forecast functions
@@ -45,7 +46,7 @@ def _compute_mae(actual: np.ndarray, predicted: np.ndarray) -> float:
 
 
 class ForecasterAgent:
-    """Fits candidate models, validates, and selects the best.
+    """Fits candidate models, validates, and selects the best or builds an ensemble.
 
     Parameters
     ----------
@@ -110,7 +111,12 @@ class ForecasterAgent:
 
         best_name = min(scores, key=lambda k: scores[k])
 
-        # Re-fit best model on full data for final predictions
+        # Build ensemble if requested and we have 2+ valid models
+        valid_models = {k: v for k, v in scores.items() if np.isfinite(v) and v > 0}
+        if plan.ensemble and len(valid_models) >= 2:
+            return self._ensemble_forecast(df, plan, scores, all_preds, valid_models, best_name)
+
+        # Single best model: re-fit on full data
         best_fn = _import_model(_MODEL_REGISTRY[best_name])
         extra = plan.config.get(best_name, {})
         final_preds = best_fn(df, h=h, target_col=self.target_col, id_col=self.id_col, time_col=self.time_col, **extra)
@@ -121,6 +127,89 @@ class ForecasterAgent:
             model_scores=scores,
             all_predictions=all_preds,
         )
+
+    def _ensemble_forecast(
+        self,
+        df: pl.DataFrame,
+        plan: ForecastPlan,
+        scores: dict[str, float],
+        all_preds: dict[str, pl.DataFrame],
+        valid_models: dict[str, float],
+        best_name: str,
+    ) -> ForecastAgentResult:
+        """Build a weighted ensemble of top models using inverse-MAE weights."""
+        h = plan.horizon
+
+        # Compute inverse-MAE weights
+        inv_mae = {k: 1.0 / v for k, v in valid_models.items()}
+        total = sum(inv_mae.values())
+        weights = {k: v / total for k, v in inv_mae.items()}
+
+        # Re-fit each ensemble member on full data and combine
+        ensemble_preds_list: list[tuple[str, float, pl.DataFrame]] = []
+        for name, w in weights.items():
+            dotted = _MODEL_REGISTRY.get(name)
+            if dotted is None:
+                continue
+            try:
+                fn = _import_model(dotted)
+                extra = plan.config.get(name, {})
+                preds = fn(df, h=h, target_col=self.target_col, id_col=self.id_col, time_col=self.time_col, **extra)
+                ensemble_preds_list.append((name, w, preds))
+            except Exception:
+                continue
+
+        if not ensemble_preds_list:
+            # Fallback to best single model
+            best_fn = _import_model(_MODEL_REGISTRY[best_name])
+            extra = plan.config.get(best_name, {})
+            final_preds = best_fn(
+                df, h=h, target_col=self.target_col, id_col=self.id_col, time_col=self.time_col, **extra
+            )
+            return ForecastAgentResult(
+                predictions=final_preds,
+                best_model=best_name,
+                model_scores=scores,
+                all_predictions=all_preds,
+            )
+
+        # Weighted average of predictions
+        final_preds = self._weighted_average(ensemble_preds_list)
+
+        # Normalize weights for the models that actually contributed
+        contrib_total = sum(w for _, w, _ in ensemble_preds_list)
+        final_weights = {name: w / contrib_total for name, w, _ in ensemble_preds_list}
+
+        return ForecastAgentResult(
+            predictions=final_preds,
+            best_model=f"ensemble({', '.join(final_weights.keys())})",
+            model_scores=scores,
+            all_predictions=all_preds,
+            ensemble_weights=final_weights,
+        )
+
+    def _weighted_average(
+        self,
+        preds_list: list[tuple[str, float, pl.DataFrame]],
+    ) -> pl.DataFrame:
+        """Compute weighted average of y_hat across model predictions."""
+        # Use the first prediction's structure as the base
+        _, first_w, base = preds_list[0]
+        join_cols = [c for c in [self.id_col, self.time_col] if c in base.columns]
+
+        result = base.with_columns((pl.col("y_hat") * first_w).alias("y_hat_weighted"))
+
+        for _, w, preds in preds_list[1:]:
+            right = preds.select([*join_cols, (pl.col("y_hat") * w).alias("__y_hat_part")])
+            result = result.join(right, on=join_cols, how="left")
+            result = result.with_columns(
+                (pl.col("y_hat_weighted") + pl.col("__y_hat_part").fill_null(0)).alias("y_hat_weighted")
+            )
+            result = result.drop("__y_hat_part")
+
+        # Replace y_hat with weighted sum
+        result = result.with_columns(pl.col("y_hat_weighted").alias("y_hat")).drop("y_hat_weighted")
+        return result
 
     def _train_val_split(
         self,

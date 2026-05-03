@@ -32,6 +32,7 @@ class AgentContext:
     data: pl.DataFrame
     metadata: dict[str, Any] = field(default_factory=dict)
     history: list[dict[str, Any]] = field(default_factory=list)
+    events: list[dict[str, Any]] = field(default_factory=list)
 
     def log(self, agent: str, message: str) -> None:
         self.history.append({"agent": agent, "message": message})

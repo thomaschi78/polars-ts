@@ -20,6 +20,8 @@ class CurationReport:
     n_outliers: int
     detected_period: int | None
     has_trend: bool
+    is_stationary: bool
+    recommended_lookback: int | None
     summary: str
 
 
@@ -65,20 +67,27 @@ class CuratorAgent:
         else:
             n_series = 1
 
-        # Outlier detection via z-score per series
         n_outliers = self._count_outliers(df)
-
-        # Seasonality detection via autocorrelation peak
         detected_period = self._detect_period(df)
-
-        # Trend detection via linear regression sign
         has_trend = self._detect_trend(df)
+        is_stationary = self._check_stationarity(df)
+        recommended_lookback = self._recommend_lookback(df)
 
-        summary = f"{n_series} series, {n_obs} obs, " f"{n_missing} missing, {n_outliers} outliers"
+        summary = f"{n_series} series, {n_obs} obs, {n_missing} missing, {n_outliers} outliers"
         if detected_period:
             summary += f", period={detected_period}"
         if has_trend:
             summary += ", trend detected"
+        if not is_stationary:
+            summary += ", non-stationary"
+        if recommended_lookback:
+            summary += f", lookback={recommended_lookback}"
+
+        # Enhance summary with LLM if available
+        if not isinstance(self.backend, RuleBasedBackend):
+            llm_summary = self.backend.complete(f"Summarize these time series diagnostics concisely:\n{summary}")
+            if llm_summary:
+                summary = llm_summary
 
         return CurationReport(
             n_observations=n_obs,
@@ -87,6 +96,8 @@ class CuratorAgent:
             n_outliers=n_outliers,
             detected_period=detected_period,
             has_trend=has_trend,
+            is_stationary=is_stationary,
+            recommended_lookback=recommended_lookback,
             summary=summary,
         )
 
@@ -112,6 +123,36 @@ class CuratorAgent:
         result = self._clip_outliers(result)
 
         return result
+
+    def trim_lookback(self, df: pl.DataFrame, lookback: int | None = None) -> pl.DataFrame:
+        """Trim each series to the most recent ``lookback`` observations.
+
+        Parameters
+        ----------
+        df
+            Input DataFrame.
+        lookback
+            Number of most-recent observations to keep per series.
+            If *None*, uses the recommended lookback from diagnostics.
+
+        """
+        if lookback is None:
+            lookback = self._recommend_lookback(df)
+        if lookback is None:
+            return df
+
+        if self.id_col in df.columns:
+            sorted_df = df.sort(self.id_col, self.time_col)
+            ranked = sorted_df.with_columns(
+                pl.col(self.time_col).rank(method="ordinal", descending=True).over(self.id_col).alias("__rank")
+            )
+        else:
+            sorted_df = df.sort(self.time_col)
+            ranked = sorted_df.with_columns(
+                pl.col(self.time_col).rank(method="ordinal", descending=True).alias("__rank")
+            )
+
+        return ranked.filter(pl.col("__rank") <= lookback).drop("__rank")
 
     def _count_outliers(self, df: pl.DataFrame) -> int:
         total = 0
@@ -146,7 +187,6 @@ class CuratorAgent:
 
         values = values - np.mean(values)
         n = len(values)
-        # Compute autocorrelation for lags 2..n//2
         var = np.dot(values, values)
         if var == 0:
             return None
@@ -179,8 +219,71 @@ class CuratorAgent:
         value_range = np.ptp(values)
         if value_range == 0:
             return False
-        # Trend if slope * n accounts for >20% of value range
-        return abs(slope * len(values)) / value_range > 0.2
+        return bool(abs(slope * len(values)) / value_range > 0.2)
+
+    def _check_stationarity(self, df: pl.DataFrame) -> bool:
+        """Check stationarity by comparing mean/variance of first vs second half."""
+        if self.id_col in df.columns:
+            first_id = df[self.id_col][0]
+            values = df.filter(pl.col(self.id_col) == first_id)[self.target_col].drop_nulls().drop_nans().to_numpy()
+        else:
+            values = df[self.target_col].drop_nulls().drop_nans().to_numpy()
+
+        if len(values) < 20:
+            return True
+
+        mid = len(values) // 2
+        first_half = values[:mid]
+        second_half = values[mid:]
+
+        mean_ratio = abs(np.mean(first_half) - np.mean(second_half)) / (np.std(values) + 1e-10)
+        var_ratio = np.std(second_half) / (np.std(first_half) + 1e-10)
+
+        # Non-stationary if mean shifted significantly or variance ratio far from 1
+        return bool(mean_ratio < 1.5 and 0.5 < var_ratio < 2.0)
+
+    def _recommend_lookback(self, df: pl.DataFrame) -> int | None:
+        """Recommend lookback window based on regime change detection.
+
+        Uses a rolling variance ratio to detect the most recent structural break,
+        then recommends using only data from after the break.
+        """
+        if self.id_col in df.columns:
+            first_id = df[self.id_col][0]
+            values = df.filter(pl.col(self.id_col) == first_id)[self.target_col].drop_nulls().drop_nans().to_numpy()
+        else:
+            values = df[self.target_col].drop_nulls().drop_nans().to_numpy()
+
+        n = len(values)
+        if n < 40:
+            return None
+
+        window = max(n // 10, 10)
+        # Compute rolling variance ratio between adjacent windows
+        best_break = None
+        best_score = 0.0
+
+        for i in range(window, n - window):
+            left_var = np.var(values[i - window : i])
+            right_var = np.var(values[i : i + window])
+            if left_var < 1e-10 and right_var < 1e-10:
+                continue
+            ratio = max(left_var, right_var) / (min(left_var, right_var) + 1e-10)
+            # Also check mean shift
+            left_mean = np.mean(values[i - window : i])
+            right_mean = np.mean(values[i : i + window])
+            mean_shift = abs(left_mean - right_mean) / (np.std(values) + 1e-10)
+            score = ratio + mean_shift
+
+            if score > best_score:
+                best_score = score
+                best_break = i
+
+        # Only recommend trimming if there's a substantial regime change
+        if best_break is not None and best_score > 4.0:
+            return n - best_break
+
+        return None
 
     def _clip_outliers(self, df: pl.DataFrame) -> pl.DataFrame:
         if self.id_col in df.columns:
