@@ -179,6 +179,13 @@ _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "acf": ("polars_ts.diagnostics", "acf"),
     "pacf": ("polars_ts.diagnostics", "pacf"),
     "ljung_box": ("polars_ts.diagnostics", "ljung_box"),
+    # --- Agents ---
+    "TimeSeriesScientist": ("polars_ts.agents", "TimeSeriesScientist"),
+    "ScientistResult": ("polars_ts.agents", "ScientistResult"),
+    "CuratorAgent": ("polars_ts.agents", "CuratorAgent"),
+    "PlannerAgent": ("polars_ts.agents", "PlannerAgent"),
+    "ForecasterAgent": ("polars_ts.agents", "ForecasterAgent"),
+    "ReporterAgent": ("polars_ts.agents", "ReporterAgent"),
 }
 
 
