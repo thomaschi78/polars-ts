@@ -60,7 +60,7 @@ class CuratorAgent:
     def curate(self, df: pl.DataFrame) -> CurationReport:
         """Run diagnostics on the input data and return a report."""
         n_obs = len(df)
-        n_missing = df[self.target_col].null_count() + df[self.target_col].is_nan().sum()
+        n_missing = int(df[self.target_col].null_count() + df[self.target_col].is_nan().sum())
 
         if self.id_col in df.columns:
             n_series = df[self.id_col].n_unique()
